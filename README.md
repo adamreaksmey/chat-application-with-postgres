@@ -58,6 +58,23 @@ $ npm run test:e2e
 $ npm run test:cov
 ```
 
+## Docker
+
+Run Postgres + 3 app nodes + Nginx:
+
+```bash
+# Build and start
+docker compose up -d --build
+
+# Run DB migrations once (any app container)
+docker compose run --rm app-1 node scripts/migrate.js
+
+# Traffic: http://localhost (Nginx), WebSocket ws://localhost/ws (sticky via ip_hash)
+# Health: http://localhost/health
+```
+
+Set `JWT_ACCESS_SECRET` and `JWT_REFRESH_SECRET` in the environment or `.env` for production.
+
 ## Deployment
 
 When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.

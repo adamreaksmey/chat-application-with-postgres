@@ -1,0 +1,15 @@
+node_modules
+dist
+.git
+.gitignore
+.env
+.env.*
+!.env.example
+*.md
+plan
+test
+coverage
+.nyc_output
+.cache
+*.log
+.DS_Store
