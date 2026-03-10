@@ -3,10 +3,10 @@ import { WebSocket } from 'ws';
 import { PostgresService } from '../postgres/postgres.service';
 import { WsServerEvent } from '../common/ws-events';
 
-/** Payload sent by the client when joining a room; optional last_seen_id for catch-up history. */
+/** Payload sent by the client when joining a room; optional last_seen_seq for catch-up history. */
 export interface JoinRoomPayload {
   room_id: string;
-  last_seen_id?: number;
+  last_seen_seq?: number;
 }
 
 /** Payload sent by the client when posting a new message in a room. */
@@ -38,7 +38,7 @@ export class ChatService {
     socket: WebSocket,
     payload: JoinRoomPayload,
   ): Promise<void> {
-    const { room_id: roomId, last_seen_id: lastSeenId } = payload;
+    const { room_id: roomId, last_seen_seq: lastSeenSeq } = payload;
 
     const memberResult = await this.postgres.query<{ n: number }>(
       'SELECT 1 AS n FROM room_members WHERE room_id = $1 AND user_id = $2',
@@ -56,21 +56,21 @@ export class ChatService {
 
     await this.postgres.subscribeToRoomChannel(roomId);
 
-    if (lastSeenId != null) {
+    if (lastSeenSeq != null) {
       const result = await this.postgres.query(
         `
-          SELECT id, room_id, user_id, content, created_at
+          SELECT seq, room_id, user_id, content, created_at
           FROM messages
-          WHERE room_id = $1 AND id > $2
-          ORDER BY created_at ASC
+          WHERE room_id = $1 AND seq > $2
+          ORDER BY seq ASC
           LIMIT 100
         `,
-        [roomId, lastSeenId],
+        [roomId, lastSeenSeq],
       );
 
       const messages = result.rows;
       const nextCursor =
-        messages.length > 0 ? messages[messages.length - 1].id : lastSeenId;
+        messages.length > 0 ? messages[messages.length - 1].seq : lastSeenSeq;
 
       socket.send(
         JSON.stringify({

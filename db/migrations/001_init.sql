@@ -39,16 +39,19 @@ CREATE TABLE IF NOT EXISTS room_members (
 );
 
 -- Messages (append-only, never update/delete)
-CREATE TABLE IF NOT EXISTS messages (
-  id          BIGSERIAL PRIMARY KEY,
+CREATE TABLE messages (
+  id          BIGSERIAL PRIMARY KEY,        -- internal PK, never exposed to clients
+  seq         BIGINT NOT NULL,              -- per-room monotonic sequence, exposed to clients
   room_id     UUID REFERENCES rooms(id) ON DELETE CASCADE,
   user_id     UUID REFERENCES users(id),
   content     TEXT NOT NULL,
   created_at  TIMESTAMPTZ DEFAULT NOW()
 );
 
+
 CREATE INDEX IF NOT EXISTS messages_room_id_created_at_idx
   ON messages (room_id, created_at DESC);
+CREATE UNIQUE INDEX ON messages (room_id, seq);
 
 -- Presence (each node writes its connected clients here)
 CREATE TABLE IF NOT EXISTS presence (
@@ -73,14 +76,14 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
   applied_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- THE MAGIC: trigger that fires NOTIFY on every new message
+-- THE MAGIC: trigger that fires NOTIFY on every new message (payload uses seq, not id)
 CREATE OR REPLACE FUNCTION notify_new_message()
 RETURNS trigger AS $$
 BEGIN
   PERFORM pg_notify(
     'room:' || NEW.room_id::text,
     json_build_object(
-      'id',         NEW.id,
+      'seq',        NEW.seq,
       'room_id',    NEW.room_id,
       'user_id',    NEW.user_id,
       'content',    NEW.content,
@@ -126,4 +129,20 @@ DROP TRIGGER IF EXISTS on_typing_change ON typing;
 CREATE TRIGGER on_typing_change
   AFTER INSERT OR UPDATE ON typing
   FOR EACH ROW EXECUTE FUNCTION notify_typing();
+
+-- seq population via trigger
+CREATE OR REPLACE FUNCTION assign_room_sequence()
+RETURNS trigger AS $$
+BEGIN
+  SELECT COALESCE(MAX(seq), 0) + 1
+  INTO NEW.seq
+  FROM messages
+  WHERE room_id = NEW.room_id;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER set_message_seq
+  BEFORE INSERT ON messages
+  FOR EACH ROW EXECUTE FUNCTION assign_room_sequence();
 
