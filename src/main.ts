@@ -1,5 +1,6 @@
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
+import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import * as cookieParser from 'cookie-parser';
 import { Server as WebSocketServer } from 'ws';
 import { AppModule } from './app.module';
@@ -24,6 +25,26 @@ async function bootstrap() {
   app.use(cookieParser());
 
   const port = Number(process.env.PORT) || 3000;
+
+  // Swagger (OpenAPI) setup – primarily for local development and inspection.
+  const config = new DocumentBuilder()
+    .setTitle('Postgres-native chat API')
+    .setDescription(
+      'HTTP API surface for auth, rooms, and message history for the Postgres-native chat app.',
+    )
+    .setVersion('1.0.0')
+    .addBearerAuth(
+      {
+        type: 'http',
+        scheme: 'bearer',
+        bearerFormat: 'JWT',
+      },
+      'access-token',
+    )
+    .build();
+
+  const document = SwaggerModule.createDocument(app, config);
+  SwaggerModule.setup('docs', app, document);
 
   const httpServer = app.getHttpServer();
   const wss = new WebSocketServer({ server: httpServer, path: '/ws' });

@@ -1,18 +1,37 @@
 import {
+  Body,
   Controller,
+  ForbiddenException,
   Get,
   Param,
+  Post,
   Query,
   Req,
   UseGuards,
-  ForbiddenException,
 } from '@nestjs/common';
 import { Request } from 'express';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { JwtPayload } from '../auth/jwt.strategy';
 import { PostgresService } from '../postgres/postgres.service';
 import { RoomsService } from '../rooms/rooms.service';
+import {
+  ApiBearerAuth,
+  ApiBody,
+  ApiOkResponse,
+  ApiOperation,
+  ApiQuery,
+  ApiTags,
+} from '@nestjs/swagger';
+import { IsString, MinLength } from 'class-validator';
 
+class SendMessageDto {
+  @IsString()
+  @MinLength(1)
+  content: string;
+}
+
+@ApiTags('chat')
+@ApiBearerAuth('access-token')
 @Controller('rooms')
 @UseGuards(JwtAuthGuard)
 export class ChatController {
@@ -22,6 +41,20 @@ export class ChatController {
   ) {}
 
   @Get(':id/messages')
+  @ApiOperation({ summary: 'Get paginated message history for a room' })
+  @ApiQuery({
+    name: 'cursor',
+    required: false,
+    description: 'Seq cursor; returns messages with seq < cursor when provided',
+  })
+  @ApiQuery({
+    name: 'limit',
+    required: false,
+    description: 'Max number of messages to return (default 50, max 100)',
+  })
+  @ApiOkResponse({
+    description: 'Messages and next_cursor for pagination',
+  })
   async getMessages(
     @Req() req: Request,
     @Param('id') roomId: string,
@@ -79,5 +112,36 @@ export class ChatController {
       messages,
       next_cursor: nextCursor,
     };
+  }
+
+  @Post(':id/messages')
+  @ApiOperation({
+    summary: 'Send a message to a room via HTTP (in addition to WebSocket)',
+  })
+  @ApiBody({ type: SendMessageDto })
+  @ApiOkResponse({
+    description: 'Created message (seq, room_id, user_id, content, created_at)',
+  })
+  async postMessage(
+    @Req() req: Request,
+    @Param('id') roomId: string,
+    @Body() body: SendMessageDto,
+  ) {
+    const user = req.user as JwtPayload;
+    const isMember = await this.roomsService.isMember(user.sub, roomId);
+    if (!isMember) {
+      throw new ForbiddenException('Not a member of this room');
+    }
+
+    const result = await this.postgres.query(
+      `
+        INSERT INTO messages (room_id, user_id, content)
+        VALUES ($1, $2, $3)
+        RETURNING seq, room_id, user_id, content, created_at
+      `,
+      [roomId, user.sub, body.content],
+    );
+
+    return result.rows[0];
   }
 }
