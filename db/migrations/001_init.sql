@@ -30,6 +30,12 @@ CREATE TABLE IF NOT EXISTS rooms (
   created_at  TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- Per-room sequence state for messages
+CREATE TABLE IF NOT EXISTS room_sequences (
+  room_id   UUID PRIMARY KEY REFERENCES rooms(id) ON DELETE CASCADE,
+  next_seq  BIGINT NOT NULL DEFAULT 1
+);
+
 -- Room Members
 CREATE TABLE IF NOT EXISTS room_members (
   room_id     UUID REFERENCES rooms(id) ON DELETE CASCADE,
@@ -130,14 +136,30 @@ CREATE TRIGGER on_typing_change
   AFTER INSERT OR UPDATE ON typing
   FOR EACH ROW EXECUTE FUNCTION notify_typing();
 
--- seq population via trigger
+-- Initialize room_sequences row whenever a room is created
+CREATE OR REPLACE FUNCTION init_room_sequence()
+RETURNS trigger AS $$
+BEGIN
+  INSERT INTO room_sequences (room_id)
+  VALUES (NEW.id)
+  ON CONFLICT (room_id) DO NOTHING;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER init_room_sequence_trigger
+  AFTER INSERT ON rooms
+  FOR EACH ROW EXECUTE FUNCTION init_room_sequence();
+
+-- seq population via trigger using room_sequences row as the serialization point
 CREATE OR REPLACE FUNCTION assign_room_sequence()
 RETURNS trigger AS $$
 BEGIN
-  SELECT COALESCE(MAX(seq), 0) + 1
-  INTO NEW.seq
-  FROM messages
-  WHERE room_id = NEW.room_id;
+  UPDATE room_sequences
+  SET next_seq = next_seq + 1
+  WHERE room_id = NEW.room_id
+  RETURNING next_seq - 1 INTO NEW.seq;
+
   RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;

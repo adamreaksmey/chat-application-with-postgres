@@ -58,7 +58,7 @@ $ npm run test:e2e
 $ npm run test:cov
 ```
 
-## Docker
+ ## Docker
 
 Run Postgres + 3 app nodes + Nginx:
 
