@@ -222,6 +222,11 @@ export class ChatWsService implements OnModuleDestroy {
     sockets.delete(socket);
     if (sockets.size === 0) {
       this.roomSockets.delete(roomId);
+      this.postgres
+        .unsubscribeFromRoomChannel(roomId)
+        .catch((err) =>
+          this.logger.warn('Unsubscribe room channel failed', err),
+        );
     }
   }
 
@@ -242,6 +247,11 @@ export class ChatWsService implements OnModuleDestroy {
         sockets.delete(socket);
         if (sockets.size === 0) {
           this.roomSockets.delete(roomId);
+          this.postgres
+            .unsubscribeFromRoomChannel(roomId)
+            .catch((err) =>
+              this.logger.warn('Unsubscribe room channel failed', err),
+            );
         }
       }
     }

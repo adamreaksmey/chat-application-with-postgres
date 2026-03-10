@@ -106,9 +106,10 @@ export class PostgresService implements OnModuleInit, OnModuleDestroy {
 
   /**
    * Lifecycle hook invoked by Nest when the module is being destroyed.
-   * Closes both the LISTEN client and the query pool.
+   * Removes event listeners, then closes both the LISTEN client and the query pool.
    */
   async onModuleDestroy(): Promise<void> {
+    this.emitter.removeAllListeners();
     await this.listenClient.end().catch(() => undefined);
     await this.pool.end().catch(() => undefined);
   }
@@ -132,6 +133,20 @@ export class PostgresService implements OnModuleInit, OnModuleDestroy {
 
     await this.listenClient.query(`LISTEN "${channel}"`);
     this.subscribedRoomChannels.add(channel);
+  }
+
+  /**
+   * Unsubscribe from a room channel and stop listening.
+   * Call this when the last subscriber leaves the room to avoid leaking channels and memory.
+   */
+  async unsubscribeFromRoomChannel(roomId: string): Promise<void> {
+    const channel = `room:${roomId}`;
+    if (!this.subscribedRoomChannels.has(channel)) {
+      return;
+    }
+
+    await this.listenClient.query(`UNLISTEN "${channel}"`);
+    this.subscribedRoomChannels.delete(channel);
   }
 
   /**
