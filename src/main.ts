@@ -1,8 +1,9 @@
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
 import * as cookieParser from 'cookie-parser';
-import { Server as WebSocketServer, WebSocket } from 'ws';
+import { Server as WebSocketServer } from 'ws';
 import { AppModule } from './app.module';
+import { ChatWsService } from './chat/chat-ws.service';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
@@ -24,15 +25,11 @@ async function bootstrap() {
 
   const port = Number(process.env.PORT) || 3000;
 
-  // Attach a raw WebSocket server to the underlying HTTP server.
   const httpServer = app.getHttpServer();
   const wss = new WebSocketServer({ server: httpServer, path: '/ws' });
 
-  // Placeholder connection handler; real logic will live in a dedicated WS/chat service.
-  wss.on('connection', (socket: WebSocket) => {
-    // For now, immediately close the socket until the auth and chat layers are implemented.
-    socket.close();
-  });
+  const chatWsService = app.get(ChatWsService);
+  chatWsService.bind(wss);
 
   await app.listen(port);
 }
