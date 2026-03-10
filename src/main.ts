@@ -53,5 +53,11 @@ async function bootstrap() {
   chatWsService.bind(wss);
 
   await app.listen(port);
+  // Log useful URLs on startup.
+  // Note: when running behind Nginx, external base URL may differ, but path /docs is stable.
+  // eslint-disable-next-line no-console
+  console.log(`HTTP server listening on http://localhost:${port}`);
+  // eslint-disable-next-line no-console
+  console.log(`Swagger docs available at http://localhost:${port}/docs`);
 }
 bootstrap();
