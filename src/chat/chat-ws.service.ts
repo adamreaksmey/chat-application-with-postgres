@@ -248,7 +248,13 @@ export class ChatWsService implements OnModuleDestroy {
     sockets.add(socket);
   }
 
-  /** Removes the socket from the room set; unsubscribes from NOTIFY when the room becomes empty. */
+  /**
+   * Removes the socket from the room set; unsubscribes from NOTIFY when the room becomes empty.
+   * The Set mutation and size check are synchronous with no await between them, so we are safe
+   * from double-execution (e.g. two cleanups both calling unsubscribeFromRoomChannel for the same
+   * room): only one path can see size 0 and invoke unsubscribe; any ref-count edge case is covered
+   * by the rollback logic in PostgresService.
+   */
   private removeSocketFromRoom(roomId: string, socket: AuthedWebSocket): void {
     const sockets = this.roomSockets.get(roomId);
     if (!sockets) return;
@@ -263,7 +269,13 @@ export class ChatWsService implements OnModuleDestroy {
     }
   }
 
-  /** Removes the socket from user and room maps and unsubscribes empty rooms from NOTIFY. */
+  /**
+   * Removes the socket from user and room maps and unsubscribes empty rooms from NOTIFY.
+   * The Set mutation and size check are synchronous with no await between them, so we are safe
+   * from double-execution (e.g. two cleanups both calling unsubscribeFromRoomChannel for the same
+   * room): only one path can see size 0 and invoke unsubscribe; any ref-count edge case is covered
+   * by the rollback logic in PostgresService.
+   */
   private cleanupSocket(socket: AuthedWebSocket): void {
     const userId = socket.userId;
     if (userId) {
