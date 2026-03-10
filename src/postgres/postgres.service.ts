@@ -2,6 +2,9 @@ import { Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { Client, Pool } from 'pg';
 import { EventEmitter } from 'events';
 
+/**
+ * Shape of the payload emitted by the Postgres NOTIFY trigger for new messages.
+ */
 export interface RoomMessagePayload {
   id: number;
   room_id: string;
@@ -10,6 +13,13 @@ export interface RoomMessagePayload {
   created_at: string;
 }
 
+/**
+ * Central Postgres access layer.
+ *
+ * - Provides a pooled connection for normal queries.
+ * - Maintains a dedicated LISTEN connection for real-time notifications.
+ * - Re-emits NOTIFY events (room messages, presence, typing) as in-process events.
+ */
 @Injectable()
 export class PostgresService implements OnModuleInit, OnModuleDestroy {
   private readonly pool: Pool;
@@ -17,6 +27,10 @@ export class PostgresService implements OnModuleInit, OnModuleDestroy {
   private readonly emitter = new EventEmitter();
   private readonly subscribedRoomChannels = new Set<string>();
 
+  /**
+   * Construct the service and initialize the query pool and LISTEN client.
+   * Throws if DATABASE_URL is missing because the service cannot function without it.
+   */
   constructor() {
     const connectionString = process.env.DATABASE_URL;
 
@@ -30,6 +44,10 @@ export class PostgresService implements OnModuleInit, OnModuleDestroy {
     this.listenClient = new Client({ connectionString });
   }
 
+  /**
+   * Lifecycle hook invoked by Nest when the module is initialized.
+   * Establishes connections, subscribes to global channels, and wires NOTIFY handlers.
+   */
   async onModuleInit(): Promise<void> {
     await this.pool.connect();
     await this.listenClient.connect();
@@ -86,6 +104,10 @@ export class PostgresService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
+  /**
+   * Lifecycle hook invoked by Nest when the module is being destroyed.
+   * Closes both the LISTEN client and the query pool.
+   */
   async onModuleDestroy(): Promise<void> {
     await this.listenClient.end().catch(() => undefined);
     await this.pool.end().catch(() => undefined);
@@ -112,16 +134,28 @@ export class PostgresService implements OnModuleInit, OnModuleDestroy {
     this.subscribedRoomChannels.add(channel);
   }
 
+  /**
+   * Register a handler for room message notifications coming from Postgres NOTIFY.
+   * Handlers receive the logical room id and the decoded message payload.
+   */
   onRoomMessage(
     handler: (roomId: string, payload: RoomMessagePayload) => void,
   ): void {
     this.emitter.on('room_message', handler);
   }
 
+  /**
+   * Register a handler for presence change notifications.
+   * The payload is the row from the `presence` table as JSON.
+   */
   onPresence(handler: (payload: unknown) => void): void {
     this.emitter.on('presence', handler);
   }
 
+  /**
+   * Register a handler for typing indicator notifications.
+   * The payload is the row from the `typing` table as JSON.
+   */
   onTyping(handler: (payload: unknown) => void): void {
     this.emitter.on('typing', handler);
   }
