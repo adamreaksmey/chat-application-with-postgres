@@ -212,7 +212,11 @@ export class PostgresService implements OnModuleInit, OnModuleDestroy {
 
   /**
    * Subscribe to Postgres notifications for a specific room channel.
+   *
    * Reference-counted: LISTEN is issued only when subscriber count goes 0 → 1.
+   * The Map update is safe without a mutex because Node.js is single-threaded
+   * and there is no await between the read and the write; the only async
+   * failure surface is the LISTEN call itself, which we roll back on error.
    */
   async subscribeToRoomChannel(roomId: string): Promise<void> {
     const channel = getRoomNotifyChannel(roomId);
@@ -221,12 +225,28 @@ export class PostgresService implements OnModuleInit, OnModuleDestroy {
     this.roomChannelCounts.set(channel, newCount);
 
     if (count === 0) {
-      await this.listenClient.query(`LISTEN "${channel}"`);
+      try {
+        await this.listenClient.query(`LISTEN "${channel}"`);
+      } catch (err) {
+        // Roll back ref count if LISTEN fails so our in-memory state stays consistent.
+        const rollbackCount = this.roomChannelCounts.get(channel) ?? 0;
+        const decremented = rollbackCount - 1;
+        if (decremented <= 0) {
+          this.roomChannelCounts.delete(channel);
+        } else {
+          this.roomChannelCounts.set(channel, decremented);
+        }
+        throw err;
+      }
     }
   }
 
   /**
-   * Unsubscribe from a room channel. Reference-counted: UNLISTEN only when count reaches 0.
+   * Unsubscribe from a room channel.
+   *
+   * Reference-counted: UNLISTEN only when count reaches 0. As with subscribe,
+   * the Map read-modify-write is synchronous and safe without a mutex; if the
+   * UNLISTEN call fails, we restore the previous count before rethrowing.
    */
   async unsubscribeFromRoomChannel(roomId: string): Promise<void> {
     const channel = getRoomNotifyChannel(roomId);
@@ -235,8 +255,15 @@ export class PostgresService implements OnModuleInit, OnModuleDestroy {
 
     const newCount = count - 1;
     if (newCount === 0) {
-      await this.listenClient.query(`UNLISTEN "${channel}"`);
       this.roomChannelCounts.delete(channel);
+      try {
+        await this.listenClient.query(`UNLISTEN "${channel}"`);
+      } catch (err) {
+        // Restore previous count if UNLISTEN fails so we do not lose the subscription.
+        const existing = this.roomChannelCounts.get(channel) ?? 0;
+        this.roomChannelCounts.set(channel, existing + 1);
+        throw err;
+      }
     } else {
       this.roomChannelCounts.set(channel, newCount);
     }
