@@ -22,10 +22,13 @@ interface IncomingFrame {
   data?: unknown;
 }
 
+const PRESENCE_SWEEP_INTERVAL_MS = 60_000;
+
 @Injectable()
 export class ChatWsService implements OnModuleDestroy {
   private readonly logger = new Logger(ChatWsService.name);
   private heartbeatInterval?: NodeJS.Timeout;
+  private presenceSweepInterval?: NodeJS.Timeout;
   private readonly userSockets = new Map<string, Set<AuthedWebSocket>>();
   private readonly roomSockets = new Map<string, Set<AuthedWebSocket>>();
 
@@ -67,12 +70,26 @@ export class ChatWsService implements OnModuleDestroy {
     });
 
     this.startHeartbeat(wss);
+    this.startPresenceSweep();
   }
 
   async onModuleDestroy(): Promise<void> {
     if (this.heartbeatInterval) {
       clearInterval(this.heartbeatInterval);
     }
+    if (this.presenceSweepInterval) {
+      clearInterval(this.presenceSweepInterval);
+    }
+  }
+
+  private startPresenceSweep(): void {
+    this.presenceSweepInterval = setInterval(() => {
+      this.chatService
+        .sweepStalePresence()
+        .catch((err) =>
+          this.logger.warn('Presence sweep failed', err as Error),
+        );
+    }, PRESENCE_SWEEP_INTERVAL_MS);
   }
 
   private async handleConnection(

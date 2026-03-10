@@ -108,6 +108,16 @@ export class ChatService {
   }
 
   /**
+   * Deletes presence rows older than 1 minute. Rows from crashed nodes (which never update
+   * last_seen again) are removed regardless of node_id.
+   */
+  async sweepStalePresence(): Promise<void> {
+    await this.postgres.query(
+      `DELETE FROM presence WHERE last_seen < NOW() - INTERVAL '1 minute'`,
+    );
+  }
+
+  /**
    * Handles a client sending a message in a room.
    * Verifies membership; if not a member, sends an error frame and returns.
    * Otherwise inserts into messages; the Postgres trigger fires NOTIFY to all nodes.
