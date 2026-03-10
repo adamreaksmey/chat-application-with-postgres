@@ -173,12 +173,12 @@ export class ChatWsService implements OnModuleDestroy {
       }
       case WsClientEvent.SendMessage: {
         const payload = data as SendMessagePayload;
-        await this.chatService.handleSendMessage(userId, payload);
+        await this.chatService.handleSendMessage(userId, socket, payload);
         break;
       }
       case WsClientEvent.TypingStart: {
         const payload = data as TypingPayload;
-        await this.chatService.handleTypingStart(userId, payload);
+        await this.chatService.handleTypingStart(userId, socket, payload);
         break;
       }
       case WsClientEvent.TypingStop: {

@@ -1,6 +1,12 @@
 import { Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
-import { Client, Pool } from 'pg';
+import { Client, Pool, PoolClient, QueryResult } from 'pg';
 import { EventEmitter } from 'events';
+import {
+  PgNotifyChannel,
+  PgEmitterEvent,
+  getRoomNotifyChannel,
+  PG_ROOM_CHANNEL_PREFIX,
+} from '../common/postgres-channels';
 
 /**
  * Shape of the payload emitted by the Postgres NOTIFY trigger for new messages.
@@ -16,19 +22,27 @@ export interface RoomMessagePayload {
 /**
  * Central Postgres access layer.
  *
- * - Provides a pooled connection for normal queries.
+ * - Provides a private pool for queries; use query() and transaction() only.
  * - Maintains a dedicated LISTEN connection for real-time notifications.
  * - Re-emits NOTIFY events (room messages, presence, typing) as in-process events.
  */
+const INITIAL_RECONNECT_MS = 1000;
+const MAX_RECONNECT_MS = 30_000;
+
 @Injectable()
 export class PostgresService implements OnModuleInit, OnModuleDestroy {
-  private readonly pool: Pool;
-  private readonly listenClient: Client;
+  private pool!: Pool;
+  private listenClient!: Client;
+  private readonly connectionString: string;
   private readonly emitter = new EventEmitter();
-  private readonly subscribedRoomChannels = new Set<string>();
+  /** Room channel name -> subscriber count. LISTEN only when count goes 0→1; UNLISTEN when count reaches 0. */
+  private readonly roomChannelCounts = new Map<string, number>();
+  private destroyed = false;
+  private reconnectBackoffMs = INITIAL_RECONNECT_MS;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
   /**
-   * Construct the service and initialize the query pool and LISTEN client.
+   * Construct the service. Pool and listen client are created in onModuleInit.
    * Throws if DATABASE_URL is missing because the service cannot function without it.
    */
   constructor() {
@@ -40,113 +54,183 @@ export class PostgresService implements OnModuleInit, OnModuleDestroy {
       );
     }
 
-    this.pool = new Pool({ connectionString });
-    this.listenClient = new Client({ connectionString });
+    this.connectionString = connectionString;
   }
 
   /**
    * Lifecycle hook invoked by Nest when the module is initialized.
-   * Establishes connections, subscribes to global channels, and wires NOTIFY handlers.
+   * Creates the query pool and LISTEN client, subscribes to global channels, wires NOTIFY handlers.
    */
   async onModuleInit(): Promise<void> {
-    await this.pool.connect();
+    this.pool = new Pool({ connectionString: this.connectionString });
+    this.listenClient = new Client({
+      connectionString: this.connectionString,
+    });
+    this.wireListenClientHandlers(this.listenClient);
     await this.listenClient.connect();
+    await this.ensureListenChannels(this.listenClient);
+  }
 
-    // Global channels for presence and typing.
-    await this.listenClient.query('LISTEN "presence"');
-    await this.listenClient.query('LISTEN "typing"');
-
-    this.listenClient.on('notification', (msg) => {
+  private wireListenClientHandlers(client: Client): void {
+    client.on('notification', (msg: { channel: string; payload?: string }) => {
       const { channel, payload } = msg;
 
       if (!payload) {
         return;
       }
 
-      if (channel.startsWith('room:')) {
-        const roomId = channel.slice('room:'.length);
+      if (channel.startsWith(PG_ROOM_CHANNEL_PREFIX)) {
+        const roomId = channel.slice(PG_ROOM_CHANNEL_PREFIX.length);
         try {
           const data = JSON.parse(payload) as RoomMessagePayload;
-          this.emitter.emit('room_message', roomId, data);
+          this.emitter.emit(PgEmitterEvent.RoomMessage, roomId, data);
         } catch (err: unknown) {
           if (err instanceof Error) {
             console.error('Error parsing room message payload:', err.message);
           }
-          // Ignore malformed payloads for now.
         }
         return;
       }
 
-      if (channel === 'presence') {
+      if (channel === PgNotifyChannel.Presence) {
         try {
           const data = JSON.parse(payload);
-          this.emitter.emit('presence', data);
+          this.emitter.emit(PgEmitterEvent.Presence, data);
         } catch {
           // ignore
         }
         return;
       }
 
-      if (channel === 'typing') {
+      if (channel === PgNotifyChannel.Typing) {
         try {
           const data = JSON.parse(payload);
-          this.emitter.emit('typing', data);
+          this.emitter.emit(PgEmitterEvent.Typing, data);
         } catch {
           // ignore
         }
       }
     });
 
-    // Basic reconnect strategy for listen client.
-    this.listenClient.on('error', () => {
-      // pg will try to reconnect on next query; in a full implementation we would
-      // add more robust reconnection logic here.
+    client.on('error', () => {
+      this.scheduleReconnect();
     });
+  }
+
+  private async ensureListenChannels(client: Client): Promise<void> {
+    await client.query(`LISTEN "${PgNotifyChannel.Presence}"`);
+    await client.query(`LISTEN "${PgNotifyChannel.Typing}"`);
+    for (const channel of this.roomChannelCounts.keys()) {
+      await client.query(`LISTEN "${channel}"`);
+    }
+  }
+
+  private scheduleReconnect(): void {
+    if (this.destroyed) return;
+    if (this.reconnectTimer) return;
+
+    const delay = this.reconnectBackoffMs;
+    this.reconnectBackoffMs = Math.min(
+      this.reconnectBackoffMs * 2,
+      MAX_RECONNECT_MS,
+    );
+
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      this.doReconnect().catch(() => {});
+    }, delay);
+  }
+
+  private async doReconnect(): Promise<void> {
+    if (this.destroyed) return;
+
+    const old = this.listenClient;
+    old.removeAllListeners();
+    await old.end().catch(() => undefined);
+
+    try {
+      this.listenClient = new Client({
+        connectionString: this.connectionString,
+      });
+      this.wireListenClientHandlers(this.listenClient);
+      await this.listenClient.connect();
+      await this.ensureListenChannels(this.listenClient);
+      this.reconnectBackoffMs = INITIAL_RECONNECT_MS;
+    } catch {
+      this.scheduleReconnect();
+    }
   }
 
   /**
    * Lifecycle hook invoked by Nest when the module is being destroyed.
-   * Removes event listeners, then closes both the LISTEN client and the query pool.
+   * Stops reconnect loop, removes event listeners, closes LISTEN client and query pool.
    */
   async onModuleDestroy(): Promise<void> {
+    this.destroyed = true;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
     this.emitter.removeAllListeners();
-    await this.listenClient.end().catch(() => undefined);
-    await this.pool.end().catch(() => undefined);
+    await this.listenClient?.end().catch(() => undefined);
+    await this.pool?.end().catch(() => undefined);
   }
 
   /**
-   * Expose the underlying query pool for normal SQL queries.
+   * Run a single parameterized query. Use this for all one-off reads/writes.
    */
-  getQueryPool(): Pool {
-    return this.pool;
+  query<T = unknown>(sql: string, params?: unknown[]): Promise<QueryResult<T>> {
+    return this.pool.query(sql, params);
+  }
+
+  /**
+   * Run multiple statements in a transaction. The client is committed on success and rolled back on throw.
+   */
+  async transaction<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const result = await fn(client);
+      await client.query('COMMIT');
+      return result;
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw err;
+    } finally {
+      client.release();
+    }
   }
 
   /**
    * Subscribe to Postgres notifications for a specific room channel.
-   * This issues a LISTEN "room:{roomId}" on the dedicated listen connection.
+   * Reference-counted: LISTEN is issued only when subscriber count goes 0 → 1.
    */
   async subscribeToRoomChannel(roomId: string): Promise<void> {
-    const channel = `room:${roomId}`;
-    if (this.subscribedRoomChannels.has(channel)) {
-      return;
-    }
+    const channel = getRoomNotifyChannel(roomId);
+    const count = this.roomChannelCounts.get(channel) ?? 0;
+    const newCount = count + 1;
+    this.roomChannelCounts.set(channel, newCount);
 
-    await this.listenClient.query(`LISTEN "${channel}"`);
-    this.subscribedRoomChannels.add(channel);
+    if (count === 0) {
+      await this.listenClient.query(`LISTEN "${channel}"`);
+    }
   }
 
   /**
-   * Unsubscribe from a room channel and stop listening.
-   * Call this when the last subscriber leaves the room to avoid leaking channels and memory.
+   * Unsubscribe from a room channel. Reference-counted: UNLISTEN only when count reaches 0.
    */
   async unsubscribeFromRoomChannel(roomId: string): Promise<void> {
-    const channel = `room:${roomId}`;
-    if (!this.subscribedRoomChannels.has(channel)) {
-      return;
-    }
+    const channel = getRoomNotifyChannel(roomId);
+    const count = this.roomChannelCounts.get(channel) ?? 0;
+    if (count === 0) return;
 
-    await this.listenClient.query(`UNLISTEN "${channel}"`);
-    this.subscribedRoomChannels.delete(channel);
+    const newCount = count - 1;
+    if (newCount === 0) {
+      await this.listenClient.query(`UNLISTEN "${channel}"`);
+      this.roomChannelCounts.delete(channel);
+    } else {
+      this.roomChannelCounts.set(channel, newCount);
+    }
   }
 
   /**
@@ -156,7 +240,7 @@ export class PostgresService implements OnModuleInit, OnModuleDestroy {
   onRoomMessage(
     handler: (roomId: string, payload: RoomMessagePayload) => void,
   ): void {
-    this.emitter.on('room_message', handler);
+    this.emitter.on(PgEmitterEvent.RoomMessage, handler);
   }
 
   /**
@@ -164,7 +248,7 @@ export class PostgresService implements OnModuleInit, OnModuleDestroy {
    * The payload is the row from the `presence` table as JSON.
    */
   onPresence(handler: (payload: unknown) => void): void {
-    this.emitter.on('presence', handler);
+    this.emitter.on(PgEmitterEvent.Presence, handler);
   }
 
   /**
@@ -172,6 +256,6 @@ export class PostgresService implements OnModuleInit, OnModuleDestroy {
    * The payload is the row from the `typing` table as JSON.
    */
   onTyping(handler: (payload: unknown) => void): void {
-    this.emitter.on('typing', handler);
+    this.emitter.on(PgEmitterEvent.Typing, handler);
   }
 }

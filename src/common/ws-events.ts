@@ -20,4 +20,5 @@ export enum WsServerEvent {
   Presence = 'presence',
   Typing = 'typing',
   History = 'history',
+  Error = 'error',
 }

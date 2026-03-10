@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, OnModuleInit } from '@nestjs/common';
 import { WebSocket } from 'ws';
 import { PostgresService } from '../postgres/postgres.service';
 import { WsServerEvent } from '../common/ws-events';
@@ -25,13 +25,23 @@ export interface TypingPayload {
  * All persistence goes through Postgres; real-time fanout is done via LISTEN/NOTIFY in PostgresService.
  */
 @Injectable()
-export class ChatService {
+export class ChatService implements OnModuleInit {
+  private nodeId!: string;
+
   constructor(private readonly postgres: PostgresService) {}
+
+  onModuleInit(): void {
+    const env = process.env.NODE_ID;
+    if (!env) {
+      throw new Error('NODE_ID is not set');
+    }
+    this.nodeId = env;
+  }
 
   /**
    * Handles a client joining a room.
-   * Subscribes this node to Postgres NOTIFY for the room, optionally sends missed messages (history)
-   * when last_seen_id is provided, and upserts the user into the presence table for this node.
+   * Verifies membership, then subscribes to NOTIFY, optionally sends history, and upserts presence.
+   * If the user is not a member, sends an error frame and returns (no throw).
    */
   async handleJoinRoom(
     userId: string,
@@ -40,11 +50,24 @@ export class ChatService {
   ): Promise<void> {
     const { room_id: roomId, last_seen_id: lastSeenId } = payload;
 
+    const memberResult = await this.postgres.query<{ n: number }>(
+      'SELECT 1 AS n FROM room_members WHERE room_id = $1 AND user_id = $2',
+      [roomId, userId],
+    );
+    if (memberResult.rows.length === 0) {
+      socket.send(
+        JSON.stringify({
+          event: WsServerEvent.Error,
+          data: { message: 'Not a member of this room' },
+        }),
+      );
+      return;
+    }
+
     await this.postgres.subscribeToRoomChannel(roomId);
 
     if (lastSeenId != null) {
-      const pool = this.postgres.getQueryPool();
-      const result = await pool.query(
+      const result = await this.postgres.query(
         `
           SELECT id, room_id, user_id, content, created_at
           FROM messages
@@ -67,49 +90,60 @@ export class ChatService {
       );
     }
 
-    const pool = this.postgres.getQueryPool();
-    await pool.query(
+    await this.postgres.query(
       `
         INSERT INTO presence (user_id, room_id, node_id, last_seen)
         VALUES ($1, $2, $3, NOW())
         ON CONFLICT (user_id, room_id)
         DO UPDATE SET node_id = EXCLUDED.node_id, last_seen = NOW()
       `,
-      [userId, roomId, process.env.NODE_ID ?? 'node-1'],
+      [userId, roomId, this.nodeId],
     );
   }
 
   /**
    * Handles a client leaving a room.
-   * Removes the user's presence row for that room so other clients stop seeing them as present.
+   * Removes the user's presence row and unsubscribes from the room NOTIFY channel.
    */
   async handleLeaveRoom(
     userId: string,
     payload: JoinRoomPayload,
   ): Promise<void> {
     const { room_id: roomId } = payload;
-    const pool = this.postgres.getQueryPool();
-    await pool.query(
-      `
-        DELETE FROM presence
-        WHERE user_id = $1 AND room_id = $2
-      `,
+    await this.postgres.query(
+      `DELETE FROM presence WHERE user_id = $1 AND room_id = $2`,
       [userId, roomId],
     );
+    await this.postgres.unsubscribeFromRoomChannel(roomId);
   }
 
   /**
    * Handles a client sending a message in a room.
-   * Inserts into messages; the Postgres trigger then fires NOTIFY so all nodes (including this one)
-   * receive the payload and can push it to their connected WebSocket clients in that room.
+   * Verifies membership; if not a member, sends an error frame and returns.
+   * Otherwise inserts into messages; the Postgres trigger fires NOTIFY to all nodes.
    */
   async handleSendMessage(
     userId: string,
+    socket: WebSocket,
     payload: SendMessagePayload,
   ): Promise<void> {
     const { room_id: roomId, content } = payload;
-    const pool = this.postgres.getQueryPool();
-    await pool.query(
+
+    const memberResult = await this.postgres.query<{ n: number }>(
+      'SELECT 1 AS n FROM room_members WHERE room_id = $1 AND user_id = $2',
+      [roomId, userId],
+    );
+    if (memberResult.rows.length === 0) {
+      socket.send(
+        JSON.stringify({
+          event: WsServerEvent.Error,
+          data: { message: 'Not a member of this room' },
+        }),
+      );
+      return;
+    }
+
+    await this.postgres.query(
       `
         INSERT INTO messages (room_id, user_id, content)
         VALUES ($1, $2, $3)
@@ -120,16 +154,31 @@ export class ChatService {
 
   /**
    * Handles the client starting to type in a room.
-   * Upserts a row in the typing table; the trigger fires NOTIFY so all nodes can broadcast
-   * the typing indicator to other clients in the room.
+   * Verifies membership; if not a member, sends an error frame and returns.
+   * Otherwise upserts into the typing table; the trigger fires NOTIFY to all nodes.
    */
   async handleTypingStart(
     userId: string,
+    socket: WebSocket,
     payload: TypingPayload,
   ): Promise<void> {
     const { room_id: roomId } = payload;
-    const pool = this.postgres.getQueryPool();
-    await pool.query(
+
+    const memberResult = await this.postgres.query<{ n: number }>(
+      'SELECT 1 AS n FROM room_members WHERE room_id = $1 AND user_id = $2',
+      [roomId, userId],
+    );
+    if (memberResult.rows.length === 0) {
+      socket.send(
+        JSON.stringify({
+          event: WsServerEvent.Error,
+          data: { message: 'Not a member of this room' },
+        }),
+      );
+      return;
+    }
+
+    await this.postgres.query(
       `
         INSERT INTO typing (user_id, room_id, started_at)
         VALUES ($1, $2, NOW())
@@ -149,8 +198,7 @@ export class ChatService {
     payload: TypingPayload,
   ): Promise<void> {
     const { room_id: roomId } = payload;
-    const pool = this.postgres.getQueryPool();
-    await pool.query(
+    await this.postgres.query(
       `
         DELETE FROM typing
         WHERE user_id = $1 AND room_id = $2

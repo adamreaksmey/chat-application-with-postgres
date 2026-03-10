@@ -120,8 +120,7 @@ export class AuthService {
       throw new UnauthorizedException('User not found');
     }
 
-    const pool = this.postgres.getQueryPool();
-    const result = await pool.query(
+    const result = await this.postgres.query(
       `
         SELECT id, refresh_token, user_id, revoked_at, expires_at
         FROM sessions
@@ -155,24 +154,24 @@ export class AuthService {
 
     const tokens = await this.createSessionAndTokens(user, undefined);
 
-    await pool.query('UPDATE sessions SET revoked_at = NOW() WHERE id = $1', [
-      matchedSession.id,
-    ]);
+    await this.postgres.query(
+      'UPDATE sessions SET revoked_at = NOW() WHERE id = $1',
+      [matchedSession.id],
+    );
 
     return { user, tokens };
   }
 
   async logout(sessionId: string | null, userId: string): Promise<void> {
-    const pool = this.postgres.getQueryPool();
     if (sessionId) {
-      await pool.query(
+      await this.postgres.query(
         'UPDATE sessions SET revoked_at = NOW() WHERE id = $1 AND user_id = $2',
         [sessionId, userId],
       );
       return;
     }
 
-    await pool.query(
+    await this.postgres.query(
       'UPDATE sessions SET revoked_at = NOW() WHERE user_id = $1 AND revoked_at IS NULL',
       [userId],
     );
@@ -186,8 +185,7 @@ export class AuthService {
     const refreshToken = this.signRefreshToken(user);
     const hashedRefresh = await this.hashRefreshToken(refreshToken);
 
-    const pool = this.postgres.getQueryPool();
-    await pool.query(
+    await this.postgres.query(
       `
         INSERT INTO sessions (user_id, refresh_token, device_info, expires_at)
         VALUES ($1, $2, $3, NOW() + INTERVAL '${this.refreshTokenTtlDays} days')

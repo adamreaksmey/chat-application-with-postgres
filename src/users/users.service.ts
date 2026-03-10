@@ -18,8 +18,7 @@ export class UsersService {
     email: string;
     passwordHash: string;
   }): Promise<User> {
-    const pool = this.postgres.getQueryPool();
-    const result = await pool.query<User>(
+    const result = await this.postgres.query<User>(
       `
         INSERT INTO users (username, email, password)
         VALUES ($1, $2, $3)
@@ -32,8 +31,7 @@ export class UsersService {
   }
 
   async findByEmail(email: string): Promise<User | null> {
-    const pool = this.postgres.getQueryPool();
-    const result = await pool.query<User>(
+    const result = await this.postgres.query<User>(
       `
         SELECT id, username, email, password, created_at
         FROM users
@@ -46,8 +44,7 @@ export class UsersService {
   }
 
   async findById(id: string): Promise<User | null> {
-    const pool = this.postgres.getQueryPool();
-    const result = await pool.query<User>(
+    const result = await this.postgres.query<User>(
       `
         SELECT id, username, email, password, created_at
         FROM users
