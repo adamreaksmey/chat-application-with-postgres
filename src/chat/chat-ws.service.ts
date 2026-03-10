@@ -12,11 +12,13 @@ import {
 import { PostgresService } from '../postgres/postgres.service';
 import { WsClientEvent, WsServerEvent } from '../common/ws-events';
 
+/** WebSocket with authenticated user id and heartbeat alive flag. */
 interface AuthedWebSocket extends WebSocket {
   userId?: string;
   isAlive?: boolean;
 }
 
+/** Client message: { event, data }. */
 interface IncomingFrame {
   event: string;
   data?: unknown;
@@ -24,6 +26,10 @@ interface IncomingFrame {
 
 const PRESENCE_SWEEP_INTERVAL_MS = 60_000;
 
+/**
+ * Raw WebSocket server for chat: JWT auth on connect, per-room tracking, and fanout
+ * from Postgres NOTIFY to connected clients. Runs heartbeat and presence sweep.
+ */
 @Injectable()
 export class ChatWsService implements OnModuleDestroy {
   private readonly logger = new Logger(ChatWsService.name);
@@ -32,6 +38,7 @@ export class ChatWsService implements OnModuleDestroy {
   private readonly userSockets = new Map<string, Set<AuthedWebSocket>>();
   private readonly roomSockets = new Map<string, Set<AuthedWebSocket>>();
 
+  /** Registers NOTIFY handlers that broadcast new_message, presence, and typing to room sockets. */
   constructor(
     private readonly jwtService: JwtService,
     private readonly chatService: ChatService,
@@ -61,6 +68,7 @@ export class ChatWsService implements OnModuleDestroy {
     });
   }
 
+  /** Attaches connection handler to the WS server and starts heartbeat and presence sweep. */
   bind(wss: WebSocketServer): void {
     wss.on('connection', (socket: AuthedWebSocket, req: IncomingMessage) => {
       this.handleConnection(socket, req).catch((err) => {
@@ -73,6 +81,7 @@ export class ChatWsService implements OnModuleDestroy {
     this.startPresenceSweep();
   }
 
+  /** Clears heartbeat and presence sweep intervals. */
   async onModuleDestroy(): Promise<void> {
     if (this.heartbeatInterval) {
       clearInterval(this.heartbeatInterval);
@@ -82,6 +91,7 @@ export class ChatWsService implements OnModuleDestroy {
     }
   }
 
+  /** Schedules periodic deletion of stale presence rows (e.g. from crashed nodes). */
   private startPresenceSweep(): void {
     this.presenceSweepInterval = setInterval(() => {
       this.chatService
@@ -92,6 +102,7 @@ export class ChatWsService implements OnModuleDestroy {
     }, PRESENCE_SWEEP_INTERVAL_MS);
   }
 
+  /** Authenticates the request, tracks the socket by user and room, and wires message/close/error. */
   private async handleConnection(
     socket: AuthedWebSocket,
     req: IncomingMessage,
@@ -134,6 +145,7 @@ export class ChatWsService implements OnModuleDestroy {
     });
   }
 
+  /** Reads JWT from query ?token= or Authorization: Bearer; returns user id or null. */
   private authenticate(req: IncomingMessage): string | null {
     const url = req.url ?? '';
     const [, queryString] = url.split('?');
@@ -163,6 +175,7 @@ export class ChatWsService implements OnModuleDestroy {
     }
   }
 
+  /** Dispatches incoming JSON frame by event to ChatService and updates room membership. */
   private async handleFrame(
     socket: AuthedWebSocket,
     frame: IncomingFrame,
@@ -208,6 +221,7 @@ export class ChatWsService implements OnModuleDestroy {
     }
   }
 
+  /** Every 30s pings all clients; terminates and cleans up those that don't pong. */
   private startHeartbeat(wss: WebSocketServer): void {
     this.heartbeatInterval = setInterval(() => {
       wss.clients.forEach((client) => {
@@ -224,6 +238,7 @@ export class ChatWsService implements OnModuleDestroy {
     }, 30_000);
   }
 
+  /** Adds the socket to this node's set for the room (for broadcast targeting). */
   private addSocketToRoom(roomId: string, socket: AuthedWebSocket): void {
     let sockets = this.roomSockets.get(roomId);
     if (!sockets) {
@@ -233,6 +248,7 @@ export class ChatWsService implements OnModuleDestroy {
     sockets.add(socket);
   }
 
+  /** Removes the socket from the room set; unsubscribes from NOTIFY when the room becomes empty. */
   private removeSocketFromRoom(roomId: string, socket: AuthedWebSocket): void {
     const sockets = this.roomSockets.get(roomId);
     if (!sockets) return;
@@ -247,6 +263,7 @@ export class ChatWsService implements OnModuleDestroy {
     }
   }
 
+  /** Removes the socket from user and room maps and unsubscribes empty rooms from NOTIFY. */
   private cleanupSocket(socket: AuthedWebSocket): void {
     const userId = socket.userId;
     if (userId) {
@@ -274,6 +291,7 @@ export class ChatWsService implements OnModuleDestroy {
     }
   }
 
+  /** Sends the JSON message to every open socket in the room on this node. */
   private broadcastToRoom(
     roomId: string,
     message: { event: string; data: unknown },
