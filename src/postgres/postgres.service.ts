@@ -1,4 +1,5 @@
 import { Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import { randomUUID } from 'crypto';
 import { Client, Pool, PoolClient, QueryResult } from 'pg';
 import { EventEmitter } from 'events';
 import {
@@ -34,6 +35,7 @@ export class PostgresService implements OnModuleInit, OnModuleDestroy {
   private pool!: Pool;
   private listenClient!: Client;
   private readonly connectionString: string;
+  private nodeId!: string;
   private readonly emitter = new EventEmitter();
   /** Room channel name -> subscriber count. LISTEN only when count goes 0→1; UNLISTEN when count reaches 0. */
   private readonly roomChannelCounts = new Map<string, number>();
@@ -62,6 +64,7 @@ export class PostgresService implements OnModuleInit, OnModuleDestroy {
    * Creates the query pool and LISTEN client, subscribes to global channels, wires NOTIFY handlers.
    */
   async onModuleInit(): Promise<void> {
+    this.nodeId = randomUUID();
     this.pool = new Pool({ connectionString: this.connectionString });
     this.listenClient = new Client({
       connectionString: this.connectionString,
@@ -69,6 +72,11 @@ export class PostgresService implements OnModuleInit, OnModuleDestroy {
     this.wireListenClientHandlers(this.listenClient);
     await this.listenClient.connect();
     await this.ensureListenChannels(this.listenClient);
+  }
+
+  /** Unique identity for this process instance (e.g. for presence.node_id). */
+  getNodeId(): string {
+    return this.nodeId;
   }
 
   private wireListenClientHandlers(client: Client): void {

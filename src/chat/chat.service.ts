@@ -1,4 +1,4 @@
-import { Injectable, OnModuleInit } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { WebSocket } from 'ws';
 import { PostgresService } from '../postgres/postgres.service';
 import { WsServerEvent } from '../common/ws-events';
@@ -25,18 +25,8 @@ export interface TypingPayload {
  * All persistence goes through Postgres; real-time fanout is done via LISTEN/NOTIFY in PostgresService.
  */
 @Injectable()
-export class ChatService implements OnModuleInit {
-  private nodeId!: string;
-
+export class ChatService {
   constructor(private readonly postgres: PostgresService) {}
-
-  onModuleInit(): void {
-    const env = process.env.NODE_ID;
-    if (!env) {
-      throw new Error('NODE_ID is not set');
-    }
-    this.nodeId = env;
-  }
 
   /**
    * Handles a client joining a room.
@@ -97,7 +87,7 @@ export class ChatService implements OnModuleInit {
         ON CONFLICT (user_id, room_id)
         DO UPDATE SET node_id = EXCLUDED.node_id, last_seen = NOW()
       `,
-      [userId, roomId, this.nodeId],
+      [userId, roomId, this.postgres.getNodeId()],
     );
   }
 

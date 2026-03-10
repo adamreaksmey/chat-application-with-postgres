@@ -25,10 +25,6 @@ export class AuthService {
     return 30;
   }
 
-  private get nodeId(): string {
-    return process.env.NODE_ID ?? 'node-1';
-  }
-
   private async hashPassword(plain: string): Promise<string> {
     return bcrypt.hash(plain, 12);
   }
@@ -190,7 +186,7 @@ export class AuthService {
         INSERT INTO sessions (user_id, refresh_token, device_info, expires_at)
         VALUES ($1, $2, $3, NOW() + INTERVAL '${this.refreshTokenTtlDays} days')
       `,
-      [user.id, hashedRefresh, deviceInfo ?? this.nodeId],
+      [user.id, hashedRefresh, deviceInfo ?? this.postgres.getNodeId()],
     );
 
     return { accessToken, refreshToken };
