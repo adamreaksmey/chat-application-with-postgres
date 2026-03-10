@@ -39,3 +39,5 @@ docker-data
 # Misc
 *.pid
 *.seed
+
+plan
