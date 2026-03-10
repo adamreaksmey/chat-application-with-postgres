@@ -1,0 +1,41 @@
+node_modules
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+dist
+build
+.next
+.turbo
+.nuxt
+out
+
+coverage
+.nyc_output
+.cache
+.parcel-cache
+
+.DS_Store
+Thumbs.db
+
+.env
+.env.*
+!.env.example
+
+*.tsbuildinfo
+
+*.log
+
+# IDE files
+.vscode
+.idea
+*.swp
+*.swo
+
+# Docker
+docker-data
+
+# Misc
+*.pid
+*.seed
