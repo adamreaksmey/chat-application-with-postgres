@@ -6,6 +6,7 @@ import { LoginDto } from './dto/login.dto';
 import { RefreshDto } from './dto/refresh.dto';
 import { LogoutDto } from './dto/logout.dto';
 import { JwtAuthGuard } from './jwt-auth.guard';
+import { AuthResponseDto, LogoutResponseDto } from './dto/auth-response.dto';
 import {
   ApiBearerAuth,
   ApiBody,
@@ -24,8 +25,9 @@ export class AuthController {
   @ApiBody({ type: RegisterDto })
   @ApiOkResponse({
     description: 'Newly created user and JWT tokens',
+    type: AuthResponseDto,
   })
-  async register(@Body() dto: RegisterDto) {
+  async register(@Body() dto: RegisterDto): Promise<AuthResponseDto> {
     const { user, tokens } = await this.authService.register(dto);
     return {
       user: {
@@ -43,8 +45,9 @@ export class AuthController {
   @ApiBody({ type: LoginDto })
   @ApiOkResponse({
     description: 'Authenticated user and JWT tokens',
+    type: AuthResponseDto,
   })
-  async login(@Body() dto: LoginDto) {
+  async login(@Body() dto: LoginDto): Promise<AuthResponseDto> {
     const { user, tokens } = await this.authService.login(dto);
     return {
       user: {
@@ -62,8 +65,9 @@ export class AuthController {
   @ApiBody({ type: RefreshDto })
   @ApiOkResponse({
     description: 'User and refreshed JWT tokens',
+    type: AuthResponseDto,
   })
-  async refresh(@Body() dto: RefreshDto) {
+  async refresh(@Body() dto: RefreshDto): Promise<AuthResponseDto> {
     const { user, tokens } = await this.authService.refresh(dto.refreshToken);
     return {
       user: {
@@ -83,8 +87,12 @@ export class AuthController {
   @ApiBody({ type: LogoutDto })
   @ApiOkResponse({
     description: 'Logout success flag',
+    type: LogoutResponseDto,
   })
-  async logout(@Req() req: Request, @Body() dto: LogoutDto) {
+  async logout(
+    @Req() req: Request,
+    @Body() dto: LogoutDto,
+  ): Promise<LogoutResponseDto> {
     const user = req.user as { sub: string };
     await this.authService.logout(dto.sessionId ?? null, user.sub);
     return { success: true };

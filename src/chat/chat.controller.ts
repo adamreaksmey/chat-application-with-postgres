@@ -23,6 +23,7 @@ import {
   ApiTags,
 } from '@nestjs/swagger';
 import { IsString, MinLength } from 'class-validator';
+import { MessageDto, PaginatedMessagesDto } from './dto/message-response.dto';
 
 class SendMessageDto {
   @IsString()
@@ -54,13 +55,14 @@ export class ChatController {
   })
   @ApiOkResponse({
     description: 'Messages and next_cursor for pagination',
+    type: PaginatedMessagesDto,
   })
   async getMessages(
     @Req() req: Request,
     @Param('id') roomId: string,
     @Query('cursor') cursor?: string,
     @Query('limit') limitStr?: string,
-  ) {
+  ): Promise<PaginatedMessagesDto> {
     const user = req.user as JwtPayload;
     const isMember = await this.roomsService.isMember(user.sub, roomId);
     if (!isMember) {
@@ -121,19 +123,20 @@ export class ChatController {
   @ApiBody({ type: SendMessageDto })
   @ApiOkResponse({
     description: 'Created message (seq, room_id, user_id, content, created_at)',
+    type: MessageDto,
   })
   async postMessage(
     @Req() req: Request,
     @Param('id') roomId: string,
     @Body() body: SendMessageDto,
-  ) {
+  ): Promise<MessageDto> {
     const user = req.user as JwtPayload;
     const isMember = await this.roomsService.isMember(user.sub, roomId);
     if (!isMember) {
       throw new ForbiddenException('Not a member of this room');
     }
 
-    const result = await this.postgres.query(
+    const result = await this.postgres.query<MessageDto>(
       `
         INSERT INTO messages (room_id, user_id, content)
         VALUES ($1, $2, $3)

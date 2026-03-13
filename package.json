@@ -6,7 +6,7 @@
   "private": true,
   "license": "UNLICENSED",
   "scripts": {
-    "build": "nest build",
+    "build": "nest build && node dist/generate-swagger.js",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
     "db:migrate": "node scripts/migrate.js",
     "loadtest": "docker run --rm --network host -v \"$(pwd)/loadtest:/scripts\" -e WS_URL=${WS_URL:-ws://localhost/ws} -e ACCESS_TOKEN=\"$ACCESS_TOKEN\" -e ROOM_ID=\"$ROOM_ID\" -e VUS=${VUS:-200} -e DURATION=${DURATION:-2m} -e MESSAGES_PER_VU=${MESSAGES_PER_VU:-20} -e MESSAGE_INTERVAL_MS=${MESSAGE_INTERVAL_MS:-200} grafana/k6 run --out json=/scripts/k6-result.json /scripts/k6-chat-ws.js",
