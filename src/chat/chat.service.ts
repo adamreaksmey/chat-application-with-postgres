@@ -59,7 +59,7 @@ export class ChatService {
     if (lastSeenSeq != null) {
       const result = await this.postgres.query(
         `
-          SELECT seq, room_id, user_id, content, created_at
+          SELECT id, seq, room_id, user_id, content, created_at
           FROM messages
           WHERE room_id = $1 AND seq > $2
           ORDER BY seq ASC

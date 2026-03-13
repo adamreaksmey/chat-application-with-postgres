@@ -2,6 +2,9 @@ import { ApiProperty } from '@nestjs/swagger';
 
 export class MessageDto {
   @ApiProperty()
+  id: number;
+
+  @ApiProperty()
   seq: number;
 
   @ApiProperty()

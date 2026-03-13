@@ -5,8 +5,8 @@ import * as cookieParser from 'cookie-parser';
 import { Server as WebSocketServer } from 'ws';
 import { AppModule } from './app.module';
 import { ChatWsService } from './chat/chat-ws.service';
-import { writeFileSync } from 'fs';
-import { join } from 'path';
+// import { writeFileSync } from 'fs';
+// import { join } from 'path';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
@@ -47,10 +47,10 @@ async function bootstrap() {
 
   const document = SwaggerModule.createDocument(app, config);
 
-  writeFileSync(
-    join(process.cwd(), 'swagger.json'),
-    JSON.stringify(document, null, 2),
-  );
+  // writeFileSync(
+  //   join(process.cwd(), 'swagger.json'),
+  //   JSON.stringify(document, null, 2),
+  // );
 
   SwaggerModule.setup('docs', app, document);
 

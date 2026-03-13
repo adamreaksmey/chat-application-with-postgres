@@ -83,7 +83,7 @@ export class ChatController {
     if (cursorSeq != null) {
       result = await this.postgres.query(
         `
-          SELECT seq, room_id, user_id, content, created_at
+          SELECT id, seq, room_id, user_id, content, created_at
           FROM messages
           WHERE room_id = $1 AND seq < $2
           ORDER BY seq DESC
@@ -94,7 +94,7 @@ export class ChatController {
     } else {
       result = await this.postgres.query(
         `
-          SELECT seq, room_id, user_id, content, created_at
+          SELECT id, seq, room_id, user_id, content, created_at
           FROM messages
           WHERE room_id = $1
           ORDER BY seq DESC
@@ -122,7 +122,8 @@ export class ChatController {
   })
   @ApiBody({ type: SendMessageDto })
   @ApiOkResponse({
-    description: 'Created message (seq, room_id, user_id, content, created_at)',
+    description:
+      'Created message (id, seq, room_id, user_id, content, created_at)',
     type: MessageDto,
   })
   async postMessage(
@@ -140,7 +141,7 @@ export class ChatController {
       `
         INSERT INTO messages (room_id, user_id, content)
         VALUES ($1, $2, $3)
-        RETURNING seq, room_id, user_id, content, created_at
+        RETURNING id, seq, room_id, user_id, content, created_at
       `,
       [roomId, user.sub, body.content],
     );
