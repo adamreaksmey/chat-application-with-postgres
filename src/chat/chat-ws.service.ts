@@ -3,14 +3,17 @@ import { JwtService } from '@nestjs/jwt';
 import { Server as WebSocketServer, WebSocket } from 'ws';
 import { ParsedUrlQuery, parse as parseQuery } from 'querystring';
 import { IncomingMessage } from 'http';
-import {
-  ChatService,
-  JoinRoomPayload,
-  SendMessagePayload,
-  TypingPayload,
-} from './chat.service';
+import { ChatService } from './chat.service';
 import { PostgresService } from '../postgres/postgres.service';
 import { WsClientEvent, WsServerEvent } from '../common/ws-events';
+import { WS_BACKPRESSURE_THRESHOLD_BYTES } from '../common/chat-limits';
+import {
+  ValidationError,
+  validateJoinRoomPayload,
+  validateLeaveRoomPayload,
+  validateSendMessagePayload,
+  validateTypingPayload,
+} from './ws-payload-validation';
 
 /** WebSocket with authenticated user id and heartbeat alive flag. */
 interface AuthedWebSocket extends WebSocket {
@@ -175,6 +178,19 @@ export class ChatWsService implements OnModuleDestroy {
     }
   }
 
+  private sendError(socket: WebSocket, message: string, code?: string): void {
+    try {
+      socket.send(
+        JSON.stringify({
+          event: WsServerEvent.Error,
+          data: code ? { message, code } : { message },
+        }),
+      );
+    } catch {
+      // ignore send failure
+    }
+  }
+
   /** Dispatches incoming JSON frame by event to ChatService and updates room membership. */
   private async handleFrame(
     socket: AuthedWebSocket,
@@ -190,32 +206,70 @@ export class ChatWsService implements OnModuleDestroy {
 
     switch (event) {
       case WsClientEvent.JoinRoom: {
-        const payload = data as JoinRoomPayload;
-        this.addSocketToRoom(payload.room_id, socket);
-        await this.chatService.handleJoinRoom(userId, socket, payload);
+        const result = validateJoinRoomPayload(data);
+        if (!result.valid) {
+          const err = result as ValidationError;
+          this.sendError(socket, err.message, err.code);
+          return;
+        }
+        this.addSocketToRoom(result.payload.room_id, socket);
+        await this.chatService.handleJoinRoom(userId, socket, result.payload);
         break;
       }
+
       case WsClientEvent.LeaveRoom: {
-        const payload = data as JoinRoomPayload;
-        this.removeSocketFromRoom(payload.room_id, socket);
-        await this.chatService.handleLeaveRoom(userId, payload);
+        const result = validateLeaveRoomPayload(data);
+        if (!result.valid) {
+          const err = result as ValidationError;
+          this.sendError(socket, err.message, err.code);
+          return;
+        }
+        this.removeSocketFromRoom(result.payload.room_id, socket);
+        await this.chatService.handleLeaveRoom(userId, result.payload);
         break;
       }
+
       case WsClientEvent.SendMessage: {
-        const payload = data as SendMessagePayload;
-        await this.chatService.handleSendMessage(userId, socket, payload);
+        const result = validateSendMessagePayload(data);
+        if (!result.valid) {
+          const err = result as ValidationError;
+          this.sendError(socket, err.message, err.code);
+          return;
+        }
+        await this.chatService.handleSendMessage(
+          userId,
+          socket,
+          result.payload,
+        );
         break;
       }
+
       case WsClientEvent.TypingStart: {
-        const payload = data as TypingPayload;
-        await this.chatService.handleTypingStart(userId, socket, payload);
+        const result = validateTypingPayload(data);
+        if (!result.valid) {
+          const err = result as ValidationError;
+          this.sendError(socket, err.message, err.code);
+          return;
+        }
+        await this.chatService.handleTypingStart(
+          userId,
+          socket,
+          result.payload,
+        );
         break;
       }
+
       case WsClientEvent.TypingStop: {
-        const payload = data as TypingPayload;
-        await this.chatService.handleTypingStop(userId, payload);
+        const result = validateTypingPayload(data);
+        if (!result.valid) {
+          const err = result as ValidationError;
+          this.sendError(socket, err.message, err.code);
+          return;
+        }
+        await this.chatService.handleTypingStop(userId, result.payload);
         break;
       }
+
       default:
         break;
     }
@@ -238,7 +292,11 @@ export class ChatWsService implements OnModuleDestroy {
     }, 30_000);
   }
 
-  /** Adds the socket to this node's set for the room (for broadcast targeting). */
+  /**
+   * Adds the socket to this node's set for the room (for broadcast targeting).
+   * @param roomId - The room ID to add the socket to.
+   * @param socket - The socket to add to the room.
+   */
   private addSocketToRoom(roomId: string, socket: AuthedWebSocket): void {
     let sockets = this.roomSockets.get(roomId);
     if (!sockets) {
@@ -303,7 +361,11 @@ export class ChatWsService implements OnModuleDestroy {
     }
   }
 
-  /** Sends the JSON message to every open socket in the room on this node. */
+  /**
+   * Sends the JSON message to every open socket in the room on this node.
+   * Skips sockets whose send buffer exceeds WS_BACKPRESSURE_THRESHOLD_BYTES so
+   * one slow client doesn't block delivery to others.
+   */
   private broadcastToRoom(
     roomId: string,
     message: { event: string; data: unknown },
@@ -315,8 +377,16 @@ export class ChatWsService implements OnModuleDestroy {
 
     const payload = JSON.stringify(message);
     for (const socket of sockets) {
-      if (socket.readyState === WebSocket.OPEN) {
+      if (socket.readyState !== WebSocket.OPEN) {
+        continue;
+      }
+      if (socket.bufferedAmount > WS_BACKPRESSURE_THRESHOLD_BYTES) {
+        continue;
+      }
+      try {
         socket.send(payload);
+      } catch {
+        // ignore per-socket send failure
       }
     }
   }

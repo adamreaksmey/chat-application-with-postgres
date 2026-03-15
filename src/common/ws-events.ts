@@ -1,6 +1,5 @@
 /**
  * WebSocket event names used by the chat layer.
- * Centralized so client and server stay in sync and refactors are safe.
  */
 
 /** Events sent by the client to the server (incoming frames). */

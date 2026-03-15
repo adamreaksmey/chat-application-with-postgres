@@ -32,6 +32,14 @@ export interface RoomMessagePayload {
 const INITIAL_RECONNECT_MS = 1000;
 const MAX_RECONNECT_MS = 30_000;
 
+const PG_POOL_MAX = Number(process.env.PG_POOL_MAX) || 20;
+const PG_POOL_IDLE_TIMEOUT_MS =
+  Number(process.env.PG_POOL_IDLE_TIMEOUT_MS) || 30_000;
+const PG_CONNECTION_TIMEOUT_MS =
+  Number(process.env.PG_CONNECTION_TIMEOUT_MS) || 5_000;
+const PG_STATEMENT_TIMEOUT_MS =
+  Number(process.env.PG_STATEMENT_TIMEOUT_MS) || 30_000;
+
 @Injectable()
 export class PostgresService implements OnModuleInit, OnModuleDestroy {
   private pool!: Pool;
@@ -67,13 +75,60 @@ export class PostgresService implements OnModuleInit, OnModuleDestroy {
    */
   async onModuleInit(): Promise<void> {
     this.nodeId = randomUUID();
-    this.pool = new Pool({ connectionString: this.connectionString });
+
+    const poolConfig = {
+      connectionString: this.connectionString,
+      max: PG_POOL_MAX,
+      idleTimeoutMillis: PG_POOL_IDLE_TIMEOUT_MS,
+      connectionTimeoutMillis: PG_CONNECTION_TIMEOUT_MS,
+    };
+
+    this.pool = new Pool(poolConfig);
+    this.wrapPoolConnectWithStatementTimeout();
+
     this.listenClient = new Client({
       connectionString: this.connectionString,
+      connectionTimeoutMillis: PG_CONNECTION_TIMEOUT_MS,
     });
+
     this.wireListenClientHandlers(this.listenClient);
     await this.listenClient.connect();
     await this.ensureListenChannels(this.listenClient);
+  }
+
+  /** Run SET statement_timeout on each checked-out client so stuck queries don't hold connections. */
+  private wrapPoolConnectWithStatementTimeout(): void {
+    const pool = this.pool;
+    const originalConnect = pool.connect.bind(pool);
+
+    const setStatementTimeout = async (client: PoolClient) => {
+      await client.query(
+        `SET statement_timeout = ${Math.max(0, PG_STATEMENT_TIMEOUT_MS)}`,
+      );
+      return client;
+    };
+
+    pool.connect = function (
+      cb?: (
+        err: Error | null,
+        client?: PoolClient,
+        done?: (err?: Error) => void,
+      ) => void,
+    ): Promise<PoolClient> {
+      if (!cb) {
+        return originalConnect().then(setStatementTimeout);
+      }
+
+      return originalConnect(
+        (err: Error, client?: PoolClient, done?: (err?: Error) => void) => {
+          if (err || !client) return cb(err, client, done);
+
+          setStatementTimeout(client)
+            .then((c) => cb(null, c, done))
+            .catch((e) => cb(e as Error, client, done));
+        },
+      ) as Promise<PoolClient>;
+    };
   }
 
   /** Unique identity for this process instance (e.g. for presence.node_id). */
@@ -81,13 +136,15 @@ export class PostgresService implements OnModuleInit, OnModuleDestroy {
     return this.nodeId;
   }
 
+  /**
+   * Listen client handler for Postgres NOTIFY events.
+   * @param client - The Postgres client to wire handlers to.
+   */
   private wireListenClientHandlers(client: Client): void {
     client.on('notification', (msg: { channel: string; payload?: string }) => {
       const { channel, payload } = msg;
 
-      if (!payload) {
-        return;
-      }
+      if (!payload) return;
 
       if (channel.startsWith(PG_ROOM_CHANNEL_PREFIX)) {
         const roomId = channel.slice(PG_ROOM_CHANNEL_PREFIX.length);

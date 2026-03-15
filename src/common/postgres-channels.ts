@@ -1,6 +1,5 @@
 /**
  * Postgres NOTIFY channel names and internal emitter event names.
- * Centralized so LISTEN/UNLISTEN and handlers stay in sync.
  */
 
 /** Global NOTIFY channel names (used in LISTEN/UNLISTEN). */

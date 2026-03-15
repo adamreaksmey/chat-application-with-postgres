@@ -22,12 +22,14 @@ import {
   ApiQuery,
   ApiTags,
 } from '@nestjs/swagger';
-import { IsString, MinLength } from 'class-validator';
+import { IsString, MaxLength, MinLength } from 'class-validator';
 import { MessageDto, PaginatedMessagesDto } from './dto/message-response.dto';
+import { MAX_MESSAGE_LENGTH } from '../common/chat-limits';
 
 class SendMessageDto {
   @IsString()
   @MinLength(1)
+  @MaxLength(MAX_MESSAGE_LENGTH)
   content: string;
 }
 

@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { WebSocket } from 'ws';
 import { PostgresService } from '../postgres/postgres.service';
 import { WsServerEvent } from '../common/ws-events';
+import { MAX_MESSAGE_LENGTH } from '../common/chat-limits';
 
 /** Payload sent by the client when joining a room; optional last_seen_seq for catch-up history. */
 export interface JoinRoomPayload {
@@ -128,6 +129,19 @@ export class ChatService {
     payload: SendMessagePayload,
   ): Promise<void> {
     const { room_id: roomId, content } = payload;
+
+    if (content.length > MAX_MESSAGE_LENGTH) {
+      socket.send(
+        JSON.stringify({
+          event: WsServerEvent.Error,
+          data: {
+            message: `content must not exceed ${MAX_MESSAGE_LENGTH} characters`,
+            code: 'message_too_long',
+          },
+        }),
+      );
+      return;
+    }
 
     const memberResult = await this.postgres.query<{ n: number }>(
       'SELECT 1 AS n FROM room_members WHERE room_id = $1 AND user_id = $2',
