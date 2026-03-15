@@ -65,6 +65,17 @@ export class AuthService {
     email: string;
     password: string;
   }): Promise<{ user: User; tokens: AuthTokens }> {
+    const found = await this.findUserByEmailOrUsername(
+      params.email,
+      params.username,
+    );
+    if (found) {
+      return {
+        user: found,
+        tokens: await this.createSessionAndTokens(found, undefined),
+      };
+    }
+
     const passwordHash = await this.hashPassword(params.password);
     const user = await this.usersService.createUser({
       username: params.username,
@@ -74,6 +85,16 @@ export class AuthService {
 
     const tokens = await this.createSessionAndTokens(user, undefined);
     return { user, tokens };
+  }
+
+  async findUserByEmailOrUsername(
+    email: string,
+    username: string,
+  ): Promise<User | null> {
+    return (
+      this.usersService.findByEmail(email) ??
+      this.usersService.findByUsername(username)
+    );
   }
 
   async validateUser(email: string, password: string): Promise<User> {
