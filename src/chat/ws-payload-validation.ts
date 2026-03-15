@@ -9,8 +9,10 @@ function isNonEmptyString(v: unknown): v is string {
   return typeof v === 'string' && v.trim().length > 0;
 }
 
-function isOptionalNumber(v: unknown): v is number | undefined {
-  return v === undefined || (typeof v === 'number' && !Number.isNaN(v));
+function isOptionalNumber(v: unknown): v is number | undefined | null {
+  return (
+    v === undefined || v === null || (typeof v === 'number' && !Number.isNaN(v))
+  );
 }
 
 /** Invalid branch of ValidationResult; use when sending error frames. */
@@ -51,7 +53,11 @@ export function validateJoinRoomPayload(
   }
   return {
     valid: true,
-    payload: { room_id: room_id.trim(), last_seen_seq },
+    payload: {
+      room_id: room_id.trim(),
+      last_seen_seq:
+        typeof last_seen_seq === 'number' ? last_seen_seq : undefined,
+    },
   };
 }
 

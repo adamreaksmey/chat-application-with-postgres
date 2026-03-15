@@ -3,6 +3,10 @@
  * Senders send messages and verify echo-back via NOTIFY; receivers stay in the room
  * and count received messages. No churn, typing, or reconnect scenarios.
  *
+ * Required: The token's user must be a member of the room. If not, the server sends
+ * "Not a member of this room" and no messages are sent. Join first via HTTP:
+ *   curl -X POST http://localhost:3000/rooms/:roomId/join -H "Authorization: Bearer $ACCESS_TOKEN"
+ *
  * Run: ACCESS_TOKEN=... ROOM_ID=... npm run loadtest:delivery
  * Or:  docker run --rm --network host -v "$(pwd)/loadtest:/scripts" \
  *        -e "WS_URL=ws://localhost/ws" -e ACCESS_TOKEN="$ACCESS_TOKEN" -e ROOM_ID="$ROOM_ID" \
@@ -56,12 +60,18 @@ export const options = {
   },
 };
 
+const fixedRoomId = '019ce764-34e8-7a65-a536-3fb7f277b2ff';
+const fixedUserTokens = [
+  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIwMTljZjFjMi00NjI1LTc0MTQtOWIzMy05NzQ0NWJhMjU4MGEiLCJ1c2VybmFtZSI6ImFkYW1taWNoYWVsIiwiaWF0IjoxNzczNTkwNjg5LCJleHAiOjE3NzQxOTU0ODl9.AdOtohPRSmeMEmn0GAwmaZ62xdWDLWF4OA0I6b5PbRM',
+  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIwMTljZjIzZS1hM2Y5LTdkYTUtYTc1Ny1mNjJmNmNhYzAwNmYiLCJ1c2VybmFtZSI6ImFkYW1taWNoYWVsMiIsImlhdCI6MTc3MzU5MDcxNywiZXhwIjoxNzc0MTk1NTE3fQ.Oi7g3nVmEwaY6CSwWhyIYV73TkNs02HM9vKk-0Glnb4',
+].join(',');
+
 // ── env ───────────────────────────────────────────────────────────
-const ROOM_IDS_RAW = __ENV.ROOM_IDS || __ENV.ROOM_ID || '';
+const ROOM_IDS_RAW = fixedRoomId || __ENV.ROOM_IDS || __ENV.ROOM_ID || '';
 const ROOM_IDS = ROOM_IDS_RAW.split(',')
   .map((s) => s.trim())
   .filter(Boolean);
-const TOKENS_RAW = __ENV.TOKENS || __ENV.ACCESS_TOKEN || '';
+const TOKENS_RAW = fixedUserTokens || __ENV.TOKENS || __ENV.ACCESS_TOKEN || '';
 const TOKENS = TOKENS_RAW.split(',')
   .map((s) => s.trim())
   .filter(Boolean);
@@ -169,35 +179,36 @@ export default function () {
 function runSender(url, roomId) {
   const pending = new Map();
   let sendLoopStarted = false;
+  let joinError = null;
   let sent = 0;
   const total = Number(__ENV.MESSAGES_PER_VU || 30);
 
-  const startSendLoop = () => {
-    if (sendLoopStarted) return;
-    sendLoopStarted = true;
-    const sendLoop = () => {
-      if (sent >= total) return;
-      const content = `vu${__VU}-iter${__ITER}-seq${sent}`;
-      pending.set(content, Date.now());
-      socket.send(
-        JSON.stringify({
-          event: 'send_message',
-          data: { room_id: roomId, content },
-        }),
-      );
-      msgSent.add(1);
-      sent++;
-      socket.setTimeout(sendLoop, Number(__ENV.MESSAGE_INTERVAL_MS || 150));
-    };
-    socket.setTimeout(sendLoop, 0);
-  };
-
   ws.connect(url, {}, (socket) => {
+    const startSendLoop = () => {
+      if (sendLoopStarted) return;
+      sendLoopStarted = true;
+      const sendLoop = () => {
+        if (sent >= total) return;
+        const content = `vu${__VU}-iter${__ITER}-seq${sent}`;
+        pending.set(content, Date.now());
+        socket.send(
+          JSON.stringify({
+            event: 'send_message',
+            data: { room_id: roomId, content },
+          }),
+        );
+        msgSent.add(1);
+        sent++;
+        socket.setTimeout(sendLoop, Number(__ENV.MESSAGE_INTERVAL_MS || 150));
+      };
+      socket.setTimeout(sendLoop, 1);
+    };
+
     socket.on('open', () => {
       socket.send(
         JSON.stringify({
           event: 'join_room',
-          data: { room_id: roomId, last_seen_seq: null },
+          data: { room_id: roomId },
         }),
       );
     });
@@ -205,6 +216,15 @@ function runSender(url, roomId) {
     socket.on('message', (raw) => {
       try {
         const frame = JSON.parse(raw);
+        if (frame.event === 'error') {
+          joinError = (frame.data && frame.data.message) || 'Unknown error';
+          if (!sendLoopStarted) {
+            console.error(
+              `[sender] join_room failed: ${joinError}. Join the room first: POST /rooms/:roomId/join`,
+            );
+          }
+          return;
+        }
         if (frame.event === 'joined_room' || frame.event === 'history') {
           startSendLoop();
         }
@@ -231,12 +251,16 @@ function runSender(url, roomId) {
     socket.setTimeout(() => socket.close(), 90_000);
   });
 
-  check(null, { 'sender completed': () => true });
+  check(null, {
+    'join_room succeeded (user must be room member)': () => !joinError,
+    'sender completed': () => sendLoopStarted,
+  });
 }
 
 function runReceiver(url, roomId) {
   let received = 0;
   let lastSeq = 0;
+  let joinError = null;
   const seenSeqs = new Set();
 
   ws.connect(url, {}, (socket) => {
@@ -244,7 +268,7 @@ function runReceiver(url, roomId) {
       socket.send(
         JSON.stringify({
           event: 'join_room',
-          data: { room_id: roomId, last_seen_seq: null },
+          data: { room_id: roomId },
         }),
       );
     });
@@ -252,6 +276,15 @@ function runReceiver(url, roomId) {
     socket.on('message', (raw) => {
       try {
         const frame = JSON.parse(raw);
+        if (frame.event === 'error') {
+          joinError = (frame.data && frame.data.message) || 'Unknown error';
+          if (received === 0) {
+            console.error(
+              `[receiver] join_room failed: ${joinError}. Join the room first: POST /rooms/:roomId/join`,
+            );
+          }
+          return;
+        }
         if (frame.event === 'new_message') {
           const valid = isValidNewMessagePayload(frame.data);
           payloadValidRate.add(valid);
@@ -273,7 +306,10 @@ function runReceiver(url, roomId) {
     socket.setTimeout(() => socket.close(), 70_000);
   });
 
-  check(null, { 'receiver received messages': () => received > 0 });
+  check(null, {
+    'join_room succeeded (user must be room member)': () => !joinError,
+    'receiver received messages': () => received > 0,
+  });
 }
 
 export function handleSummary(data) {

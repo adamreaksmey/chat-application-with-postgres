@@ -114,7 +114,10 @@ curl -s -X POST http://localhost:3000/rooms \
   -H "Content-Type: application/json" -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
   -d '{"name":"Load test room"}' | jq -r '.id'
 
-# 3. Run load test (user is already room creator/member)
+# If using an existing room, join it first (creator is already a member):
+# curl -X POST http://localhost:3000/rooms/ROOM_ID/join -H "Authorization: Bearer YOUR_ACCESS_TOKEN"
+
+# 3. Run load test (user must be room member or join_room returns error and no messages are sent)
 export ACCESS_TOKEN="paste_access_token_here"
 export ROOM_ID="paste_room_id_here"
 npm run loadtest
