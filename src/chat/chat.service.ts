@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { WebSocket } from 'ws';
 import { PostgresService } from '../postgres/postgres.service';
 import { WsServerEvent } from '../common/ws-events';
@@ -27,6 +27,8 @@ export interface TypingPayload {
  */
 @Injectable()
 export class ChatService {
+  private readonly logger = new Logger(ChatService.name);
+
   constructor(private readonly postgres: PostgresService) {}
 
   /**
@@ -90,6 +92,13 @@ export class ChatService {
       `,
       [userId, roomId, this.postgres.getNodeId()],
     );
+
+    socket.send(
+      JSON.stringify({
+        event: WsServerEvent.JoinedRoom,
+        data: { room_id: roomId },
+      }),
+    );
   }
 
   /**
@@ -129,6 +138,7 @@ export class ChatService {
     payload: SendMessagePayload,
   ): Promise<void> {
     const { room_id: roomId, content } = payload;
+    this.logger.log(`handleSendMessage room=${roomId} user=${userId}`);
 
     if (content.length > MAX_MESSAGE_LENGTH) {
       socket.send(
@@ -148,6 +158,9 @@ export class ChatService {
       [roomId, userId],
     );
     if (memberResult.rows.length === 0) {
+      this.logger.warn(
+        `send_message rejected: user=${userId} not in room=${roomId}`,
+      );
       socket.send(
         JSON.stringify({
           event: WsServerEvent.Error,
@@ -157,6 +170,7 @@ export class ChatService {
       return;
     }
 
+    this.logger.log(`inserting message room=${roomId} user=${userId}`);
     await this.postgres.query(
       `
         INSERT INTO messages (room_id, user_id, content)

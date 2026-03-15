@@ -18,7 +18,7 @@ export class AuthService {
   ) {}
 
   private get accessTokenTtlSeconds(): number {
-    return 15 * 60;
+    return 7 * 24 * 60 * 60; // 7 days
   }
 
   private get refreshTokenTtlDays(): number {
