@@ -184,7 +184,7 @@ export function setup() {
   return {};
 }
 
-/** Returns true if data has expected new_message shape (id, seq, room_id, user_id, content, created_at). */
+/** Returns true if data has expected new_message shape (id, seq, room_id, user_id, username, content, created_at). */
 function isValidNewMessagePayload(data) {
   if (!data || typeof data !== 'object') return false;
   const d = data;
@@ -194,6 +194,7 @@ function isValidNewMessagePayload(data) {
     d.seq >= 1 &&
     typeof d.room_id === 'string' &&
     typeof d.user_id === 'string' &&
+    typeof d.username === 'string' &&
     typeof d.content === 'string' &&
     (typeof d.created_at === 'string' || d.created_at instanceof Date)
   );

@@ -34,44 +34,38 @@ export const options = {
       executor: 'ramping-vus',
       startVUs: 0,
       stages: [
-        { duration: '10s', target: __ENV.SENDER_VUS || 20 },
-        { duration: '1m', target: __ENV.SENDER_VUS || 20 },
-        { duration: '10s', target: 0 },
+        { duration: '15s', target: __ENV.SENDER_VUS || 80 },
+        { duration: '2m30s', target: __ENV.SENDER_VUS || 80 },
+        { duration: '15s', target: 0 },
       ],
       env: { SCENARIO: 'sender' },
     },
     receivers: {
       executor: 'constant-vus',
-      vus: __ENV.RECEIVER_VUS || 50,
-      duration: '1m20s',
+      vus: __ENV.RECEIVER_VUS || 200,
+      duration: '3m',
       env: { SCENARIO: 'receiver' },
       startTime: '5s',
     },
   },
 
   thresholds: {
-    delivery_success_rate: ['rate>0.99'],
-    delivery_latency_ms: ['p(95)<500'],
-    ws_connecting: ['p(95)<2000'],
-    ws_msgs_received: ['count>100'],
+    delivery_success_rate: ['rate>0.98'],
+    delivery_latency_ms: ['p(95)<800'],
+    ws_connecting: ['p(95)<3000'],
+    ws_msgs_received: ['count>5000'],
     payload_valid_rate: ['rate>0.99'],
     seq_duplicates: ['count==0'],
     seq_out_of_order: ['count==0'],
   },
 };
 
-const fixedRoomId = '019ce764-34e8-7a65-a536-3fb7f277b2ff';
-const fixedUserTokens = [
-  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIwMTljZjFjMi00NjI1LTc0MTQtOWIzMy05NzQ0NWJhMjU4MGEiLCJ1c2VybmFtZSI6ImFkYW1taWNoYWVsIiwiaWF0IjoxNzczNTkwNjg5LCJleHAiOjE3NzQxOTU0ODl9.AdOtohPRSmeMEmn0GAwmaZ62xdWDLWF4OA0I6b5PbRM',
-  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIwMTljZjIzZS1hM2Y5LTdkYTUtYTc1Ny1mNjJmNmNhYzAwNmYiLCJ1c2VybmFtZSI6ImFkYW1taWNoYWVsMiIsImlhdCI6MTc3MzU5MDcxNywiZXhwIjoxNzc0MTk1NTE3fQ.Oi7g3nVmEwaY6CSwWhyIYV73TkNs02HM9vKk-0Glnb4',
-].join(',');
-
 // ── env ───────────────────────────────────────────────────────────
-const ROOM_IDS_RAW = fixedRoomId || __ENV.ROOM_IDS || __ENV.ROOM_ID || '';
+const ROOM_IDS_RAW = __ENV.ROOM_IDS || __ENV.ROOM_ID || '';
 const ROOM_IDS = ROOM_IDS_RAW.split(',')
   .map((s) => s.trim())
   .filter(Boolean);
-const TOKENS_RAW = fixedUserTokens || __ENV.TOKENS || __ENV.ACCESS_TOKEN || '';
+const TOKENS_RAW = __ENV.TOKENS || __ENV.ACCESS_TOKEN || '';
 const TOKENS = TOKENS_RAW.split(',')
   .map((s) => s.trim())
   .filter(Boolean);
@@ -160,6 +154,7 @@ function isValidNewMessagePayload(data) {
     d.seq >= 1 &&
     typeof d.room_id === 'string' &&
     typeof d.user_id === 'string' &&
+    typeof d.username === 'string' &&
     typeof d.content === 'string' &&
     (typeof d.created_at === 'string' || d.created_at instanceof Date)
   );
@@ -181,7 +176,7 @@ function runSender(url, roomId) {
   let sendLoopStarted = false;
   let joinError = null;
   let sent = 0;
-  const total = Number(__ENV.MESSAGES_PER_VU || 30);
+  const total = Number(__ENV.MESSAGES_PER_VU || 80);
 
   ws.connect(url, {}, (socket) => {
     const startSendLoop = () => {
@@ -199,7 +194,7 @@ function runSender(url, roomId) {
         );
         msgSent.add(1);
         sent++;
-        socket.setTimeout(sendLoop, Number(__ENV.MESSAGE_INTERVAL_MS || 150));
+        socket.setTimeout(sendLoop, Number(__ENV.MESSAGE_INTERVAL_MS || 80));
       };
       socket.setTimeout(sendLoop, 1);
     };
@@ -248,7 +243,7 @@ function runSender(url, roomId) {
       pending.forEach(() => deliveryRate.add(false));
     });
 
-    socket.setTimeout(() => socket.close(), 90_000);
+    socket.setTimeout(() => socket.close(), 120_000);
   });
 
   check(null, {
@@ -303,7 +298,7 @@ function runReceiver(url, roomId) {
       }
     });
 
-    socket.setTimeout(() => socket.close(), 70_000);
+    socket.setTimeout(() => socket.close(), 90_000);
   });
 
   check(null, {

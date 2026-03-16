@@ -11,13 +11,14 @@ import {
 
 /**
  * Shape of the payload emitted by the Postgres NOTIFY trigger for new messages.
- * id is the table PK; seq is the per-room monotonic cursor.
+ * id is the table PK; seq is the per-room monotonic cursor; username is denormalized from users.
  */
 export interface RoomMessagePayload {
   id: number;
   seq: number;
   room_id: string;
   user_id: string;
+  username: string;
   content: string;
   created_at: string;
 }
