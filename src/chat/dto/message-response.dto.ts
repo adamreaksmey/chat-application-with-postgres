@@ -13,6 +13,11 @@ export class MessageDto {
   @ApiProperty()
   user_id: string;
 
+  @ApiProperty({
+    description: 'Username of the sender',
+  })
+  username: string;
+
   @ApiProperty()
   content: string;
 

@@ -112,10 +112,12 @@ export class ChatWsService implements OnModuleDestroy {
   ): Promise<void> {
     const userId = this.authenticate(req);
     if (!userId) {
+      this.logger.warn('WS connection rejected: missing or invalid token');
       socket.close();
       return;
     }
 
+    this.logger.log(`WS connected userId=${userId}`);
     socket.userId = userId;
     socket.isAlive = true;
 
@@ -236,6 +238,9 @@ export class ChatWsService implements OnModuleDestroy {
           this.sendError(socket, err.message, err.code);
           return;
         }
+        this.logger.log(
+          `send_message room=${result.payload.room_id} user=${userId} len=${result.payload.content.length}`,
+        );
         await this.chatService.handleSendMessage(
           userId,
           socket,
