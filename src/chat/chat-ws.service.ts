@@ -112,10 +112,12 @@ export class ChatWsService implements OnModuleDestroy {
   ): Promise<void> {
     const userId = this.authenticate(req);
     if (!userId) {
+      this.logger.warn('WS connection rejected: missing or invalid token');
       socket.close();
       return;
     }
 
+    this.logger.log(`WS connected userId=${userId}`);
     socket.userId = userId;
     socket.isAlive = true;
 
@@ -236,6 +238,9 @@ export class ChatWsService implements OnModuleDestroy {
           this.sendError(socket, err.message, err.code);
           return;
         }
+        this.logger.log(
+          `send_message room=${result.payload.room_id} user=${userId} len=${result.payload.content.length}`,
+        );
         await this.chatService.handleSendMessage(
           userId,
           socket,
@@ -371,23 +376,31 @@ export class ChatWsService implements OnModuleDestroy {
     message: { event: string; data: unknown },
   ): void {
     const sockets = this.roomSockets.get(roomId);
-    if (!sockets) {
-      return;
-    }
+    if (!sockets || sockets.size === 0) return;
 
     const payload = JSON.stringify(message);
-    for (const socket of sockets) {
-      if (socket.readyState !== WebSocket.OPEN) {
-        continue;
+    const targets = [...sockets].filter(
+      (s) =>
+        s.readyState === WebSocket.OPEN &&
+        s.bufferedAmount <= WS_BACKPRESSURE_THRESHOLD_BYTES,
+    );
+
+    const CHUNK_SIZE = 50;
+    let offset = 0;
+
+    const sendChunk = () => {
+      const end = Math.min(offset + CHUNK_SIZE, targets.length);
+      for (let i = offset; i < end; i++) {
+        try {
+          targets[i].send(payload);
+        } catch {}
       }
-      if (socket.bufferedAmount > WS_BACKPRESSURE_THRESHOLD_BYTES) {
-        continue;
+      offset = end;
+      if (offset < targets.length) {
+        setImmediate(sendChunk); // yield to event loop between chunks
       }
-      try {
-        socket.send(payload);
-      } catch {
-        // ignore per-socket send failure
-      }
-    }
+    };
+
+    setImmediate(sendChunk);
   }
 }

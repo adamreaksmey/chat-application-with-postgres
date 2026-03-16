@@ -1,6 +1,8 @@
 import ws from 'k6/ws';
 import { check, sleep } from 'k6';
 import { Counter, Rate, Trend } from 'k6/metrics';
+import encoding from 'k6/encoding';
+import { textSummary } from 'https://jslib.k6.io/k6-summary/0.0.2/index.js';
 
 // ── custom metrics ────────────────────────────────────────────────
 const msgDelivered = new Counter('messages_delivered');
@@ -9,7 +11,12 @@ const deliveryRate = new Rate('delivery_success_rate');
 const deliveryLatency = new Trend('delivery_latency_ms', true);
 const reconnects = new Counter('reconnect_count');
 const historyFetched = new Counter('history_fetch_count');
+const payloadValidRate = new Rate('payload_valid_rate');
+const seqDuplicateCount = new Counter('seq_duplicates');
+const seqOutOfOrderCount = new Counter('seq_out_of_order');
 
+// k6 ws.connect() blocks the VU until the socket closes. Each scenario must close
+// the socket (via setTimeout) so iterations complete and the test can exit and print the report.
 // ── scenario matrix ───────────────────────────────────────────────
 export const options = {
   scenarios: {
@@ -79,8 +86,10 @@ export const options = {
     delivery_success_rate: ['rate>0.99'], // 99%+ messages actually delivered
     delivery_latency_ms: ['p(95)<500'], // 95th percentile under 500ms
     ws_connecting: ['p(95)<1000'], // connections established under 1s
-    // Lower bar: ensures some WS traffic. test didnt pass at first lol
     ws_msgs_received: ['count>1000'],
+    payload_valid_rate: ['rate>0.99'], // 99%+ new_message payloads well-formed (id, seq, content, etc.)
+    seq_duplicates: ['count==0'], // no duplicate seq per room (corrupt or re-delivery)
+    seq_out_of_order: ['count==0'], // seq strictly increasing per room under load
   },
 };
 
@@ -104,6 +113,93 @@ function pickRandom(arr) {
   return arr.length ? arr[Math.floor(Math.random() * arr.length)] : undefined;
 }
 
+/**
+ * Decode JWT payload (no signature verification) and check expiration.
+ * @returns {{ valid: true, payload: object }} or {{ valid: false, reason: string }}
+ */
+function validateJwt(token) {
+  if (!token || typeof token !== 'string') {
+    return { valid: false, reason: 'Token is missing or not a string' };
+  }
+  const parts = token.trim().split('.');
+  if (parts.length !== 3) {
+    return {
+      valid: false,
+      reason: 'Invalid token: not a valid JWT (expected 3 parts)',
+    };
+  }
+  let payloadStr;
+  try {
+    payloadStr = encoding.b64decode(parts[1], 'rawurl', 's');
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  } catch (e) {
+    return {
+      valid: false,
+      reason: 'Invalid token: payload is not valid base64url',
+    };
+  }
+  let payload;
+  try {
+    payload = JSON.parse(payloadStr);
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  } catch (e) {
+    return { valid: false, reason: 'Invalid token: payload is not valid JSON' };
+  }
+  if (!payload || typeof payload !== 'object') {
+    return { valid: false, reason: 'Invalid token: payload is not an object' };
+  }
+  const now = Math.floor(Date.now() / 1000);
+  if (typeof payload.exp === 'number') {
+    if (payload.exp < now) {
+      return {
+        valid: false,
+        reason: `Token has expired (exp=${payload.exp}, now=${now}). Get a fresh ACCESS_TOKEN (e.g. login again).`,
+      };
+    }
+  }
+  return { valid: true, payload };
+}
+
+/** Abort the test immediately if token or room is missing/invalid (no VUs will run). */
+export function setup() {
+  if (!TOKENS.length) {
+    throw new Error(
+      'ACCESS_TOKEN (or TOKENS) is required and must be non-empty. ' +
+        'Set it before running the load test (e.g. export ACCESS_TOKEN=...).',
+    );
+  }
+  if (!ROOM_IDS.length) {
+    throw new Error(
+      'ROOM_ID (or ROOM_IDS) is required and must be non-empty. ' +
+        'Set it before running the load test (e.g. export ROOM_ID=...).',
+    );
+  }
+  for (let i = 0; i < TOKENS.length; i++) {
+    const result = validateJwt(TOKENS[i]);
+    if (!result.valid) {
+      const label = TOKENS.length > 1 ? `Token at index ${i}` : 'ACCESS_TOKEN';
+      throw new Error(`${label}: ${result.reason}`);
+    }
+  }
+  return {};
+}
+
+/** Returns true if data has expected new_message shape (id, seq, room_id, user_id, username, content, created_at). */
+function isValidNewMessagePayload(data) {
+  if (!data || typeof data !== 'object') return false;
+  const d = data;
+  return (
+    typeof d.id === 'number' &&
+    typeof d.seq === 'number' &&
+    d.seq >= 1 &&
+    typeof d.room_id === 'string' &&
+    typeof d.user_id === 'string' &&
+    typeof d.username === 'string' &&
+    typeof d.content === 'string' &&
+    (typeof d.created_at === 'string' || d.created_at instanceof Date)
+  );
+}
+
 // ── scenario implementations ──────────────────────────────────────
 export default function () {
   const scenario = __ENV.SCENARIO;
@@ -120,8 +216,34 @@ export default function () {
 }
 
 // ── sender: sends messages, tracks delivery via echo-back ─────────
+// Must wait for joined_room (or history) before sending, so the server has finished
+// subscribeToRoomChannel and we receive NOTIFY when our message is inserted.
 function runSender(url, roomId) {
-  const pending = new Map(); // seq → sent_at timestamp
+  const pending = new Map(); // content → sent_at timestamp
+  let sendLoopStarted = false;
+  let sent = 0;
+  const total = Number(__ENV.MESSAGES_PER_VU || 20);
+
+  const startSendLoop = () => {
+    if (sendLoopStarted) return;
+    sendLoopStarted = true;
+
+    const sendLoop = () => {
+      if (sent >= total) return;
+      const content = `vu${__VU}-iter${__ITER}-seq${sent}`;
+      pending.set(content, Date.now());
+      socket.send(
+        JSON.stringify({
+          event: 'send_message',
+          data: { room_id: roomId, content },
+        }),
+      );
+      msgSent.add(1);
+      sent++;
+      socket.setTimeout(sendLoop, Number(__ENV.MESSAGE_INTERVAL_MS || 100));
+    };
+    socket.setTimeout(sendLoop, 0);
+  };
 
   ws.connect(url, {}, (socket) => {
     socket.on('open', () => {
@@ -131,41 +253,26 @@ function runSender(url, roomId) {
           data: { room_id: roomId, last_seen_seq: null },
         }),
       );
-
-      let sent = 0;
-      const total = Number(__ENV.MESSAGES_PER_VU || 20);
-
-      const sendLoop = () => {
-        if (sent >= total) return;
-        const content = `vu${__VU}-iter${__ITER}-seq${sent}`;
-        pending.set(content, Date.now());
-        socket.send(
-          JSON.stringify({
-            event: 'send_message',
-            data: { room_id: roomId, content },
-          }),
-        );
-        msgSent.add(1);
-        sent++;
-        socket.setTimeout(sendLoop, Number(__ENV.MESSAGE_INTERVAL_MS || 100));
-      };
-
-      socket.setTimeout(sendLoop, 50);
     });
 
-    // when we receive our own message back via NOTIFY fanout,
-    // record latency — this proves end-to-end delivery works
+    // Wait for join to complete (server sends joined_room or history) before sending.
+    // Otherwise send_message can be processed before subscribeToRoomChannel, so we miss NOTIFY.
     socket.on('message', (raw) => {
       try {
         const frame = JSON.parse(raw);
+        if (frame.event === 'joined_room' || frame.event === 'history') {
+          startSendLoop();
+        }
         if (frame.event === 'new_message') {
-          const sentAt = pending.get(frame.data.content);
+          const valid = isValidNewMessagePayload(frame.data);
+          payloadValidRate.add(valid);
+          const sentAt = pending.get(frame.data && frame.data.content);
           if (sentAt) {
             const latency = Date.now() - sentAt;
             deliveryLatency.add(latency);
-            deliveryRate.add(true);
+            deliveryRate.add(valid);
             msgDelivered.add(1);
-            pending.delete(frame.data.content);
+            pending.delete(frame.data && frame.data.content);
           }
         }
       } catch (error) {
@@ -178,15 +285,20 @@ function runSender(url, roomId) {
       pending.forEach(() => deliveryRate.add(false));
     });
 
-    socket.setTimeout(() => socket.close(), 25000);
+    // k6 blocks the VU until the socket closes; this timeout lets the iteration complete
+    // so the test can finish and print the report. Keep under sender scenario duration (3m).
+    const SENDER_SOCKET_LIFETIME_MS = 25_000;
+    socket.setTimeout(() => socket.close(), SENDER_SOCKET_LIFETIME_MS);
   });
 
   check(null, { 'sender completed': () => true });
 }
 
-// ── receiver: stays connected, counts received messages ───────────
+// ── receiver: stays connected, validates payload + seq order per room ───────────
 function runReceiver(url, roomId) {
   let received = 0;
+  let lastSeq = 0;
+  const seenSeqs = new Set();
 
   ws.connect(url, {}, (socket) => {
     socket.on('open', () => {
@@ -202,16 +314,27 @@ function runReceiver(url, roomId) {
       try {
         const frame = JSON.parse(raw);
         if (frame.event === 'new_message') {
+          const valid = isValidNewMessagePayload(frame.data);
+          payloadValidRate.add(valid);
           msgDelivered.add(1);
           received++;
+          if (valid && frame.data) {
+            const seq = frame.data.seq;
+            if (seenSeqs.has(seq)) seqDuplicateCount.add(1);
+            else seenSeqs.add(seq);
+            if (seq <= lastSeq) seqOutOfOrderCount.add(1);
+            else lastSeq = seq;
+          }
         }
       } catch (error) {
         console.error('Error parsing message', error);
       }
     });
 
-    // stay alive for the full scenario duration
-    socket.setTimeout(() => socket.close(), 170000);
+    // k6 blocks the VU until the socket closes. Use a timeout shorter than scenario (3m)
+    // so iterations complete and the test can exit and print the report.
+    const RECEIVER_SOCKET_LIFETIME_MS = 60_000; // 1 min; VU will reconnect for remaining 2m
+    socket.setTimeout(() => socket.close(), RECEIVER_SOCKET_LIFETIME_MS);
   });
 
   check(null, { 'receiver stayed alive': () => received > 0 });
@@ -345,4 +468,14 @@ function runTyping(url, roomId) {
 
     socket.setTimeout(() => socket.close(), 60000);
   });
+}
+
+// Write summary to file so it's preserved even if stdout is truncated (e.g. tee buffer).
+// If the run is killed (OOM, Docker limit), this may not run; see POST-RUN-CHECKLIST.md.
+export function handleSummary(data) {
+  const opts = { indent: ' ', enableColors: false };
+  return {
+    stdout: textSummary(data, opts),
+    'summary.txt': textSummary(data, opts),
+  };
 }

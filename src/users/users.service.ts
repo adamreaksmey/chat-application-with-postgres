@@ -43,6 +43,19 @@ export class UsersService {
     return result.rows[0] ?? null;
   }
 
+  async findByUsername(username: string): Promise<User | null> {
+    const result = await this.postgres.query<User>(
+      `
+        SELECT id, username, email, password, created_at
+        FROM users
+        WHERE username = $1
+      `,
+      [username],
+    );
+
+    return result;
+  }
+
   async findById(id: string): Promise<User | null> {
     const result = await this.postgres.query<User>(
       `
