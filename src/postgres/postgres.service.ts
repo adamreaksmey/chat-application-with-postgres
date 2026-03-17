@@ -5,10 +5,8 @@ import { EventEmitter } from 'events';
 import {
   PgNotifyChannel,
   PgEmitterEvent,
-  getRoomShardForRoomId,
-  getRoomShardNotifyChannel,
-  PG_ROOM_SHARD_CHANNEL_PREFIX,
-  PG_ROOM_SHARD_COUNT,
+  getRoomNotifyChannel,
+  PG_ROOM_CHANNEL_PREFIX,
 } from '../common/postgres-channels';
 
 /**
@@ -50,10 +48,8 @@ export class PostgresService implements OnModuleInit, OnModuleDestroy {
   private readonly connectionString: string;
   private nodeId!: string;
   private readonly emitter = new EventEmitter();
-  /** Room id -> subscriber count (logical subscriptions). */
+  /** Room id -> subscriber count. LISTEN only when count goes 0→1; UNLISTEN when count reaches 0. */
   private readonly roomSubscriptionCounts = new Map<string, number>();
-  /** Shard channel name -> subscriber count. LISTEN only when count goes 0→1; UNLISTEN when count reaches 0. */
-  private readonly shardChannelCounts = new Map<string, number>();
   private destroyed = false;
   private reconnectBackoffMs = INITIAL_RECONNECT_MS;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -151,11 +147,11 @@ export class PostgresService implements OnModuleInit, OnModuleDestroy {
 
       if (!payload) return;
 
-      if (channel.startsWith(PG_ROOM_SHARD_CHANNEL_PREFIX)) {
+      if (channel.startsWith(PG_ROOM_CHANNEL_PREFIX)) {
         try {
           const data = JSON.parse(payload) as RoomMessagePayload;
-          // We route to the logical room based on payload.room_id (per-room subscriptions preserved).
-          this.emitter.emit(PgEmitterEvent.RoomMessage, data.room_id, data);
+          const roomId = channel.slice(PG_ROOM_CHANNEL_PREFIX.length);
+          this.emitter.emit(PgEmitterEvent.RoomMessage, roomId, data);
         } catch (err: unknown) {
           if (err instanceof Error) {
             console.error('Error parsing room message payload:', err.message);
@@ -192,8 +188,8 @@ export class PostgresService implements OnModuleInit, OnModuleDestroy {
   private async ensureListenChannels(client: Client): Promise<void> {
     await client.query(`LISTEN "${PgNotifyChannel.Presence}"`);
     await client.query(`LISTEN "${PgNotifyChannel.Typing}"`);
-    for (const channel of this.shardChannelCounts.keys()) {
-      await client.query(`LISTEN "${channel}"`);
+    for (const roomId of this.roomSubscriptionCounts.keys()) {
+      await client.query(`LISTEN "${getRoomNotifyChannel(roomId)}"`);
     }
   }
 
@@ -276,42 +272,20 @@ export class PostgresService implements OnModuleInit, OnModuleDestroy {
   /**
    * Subscribe to Postgres notifications for a specific room.
    *
-   * Reference-counted at the shard level: LISTEN is issued only when shard count goes 0 → 1.
-   * The Map update is safe without a mutex because Node.js is single-threaded
-   * and there is no await between the read and the write; the only async
-   * failure surface is the LISTEN call itself, which we roll back on error.
+   * Reference-counted per room: LISTEN is issued only when count goes 0 → 1.
    */
   async subscribeToRoomChannel(roomId: string): Promise<void> {
     const roomCount = this.roomSubscriptionCounts.get(roomId) ?? 0;
-    this.roomSubscriptionCounts.set(roomId, roomCount + 1);
+    const next = roomCount + 1;
+    this.roomSubscriptionCounts.set(roomId, next);
 
-    const shard = getRoomShardForRoomId(roomId, PG_ROOM_SHARD_COUNT);
-    const channel = getRoomShardNotifyChannel(shard);
-    const shardCount = this.shardChannelCounts.get(channel) ?? 0;
-    const newShardCount = shardCount + 1;
-    this.shardChannelCounts.set(channel, newShardCount);
-
-    if (shardCount === 0) {
+    if (roomCount === 0) {
+      const channel = getRoomNotifyChannel(roomId);
       try {
         await this.listenClient.query(`LISTEN "${channel}"`);
       } catch (err) {
-        // Roll back shard ref count if LISTEN fails so our in-memory state stays consistent.
-        const rollbackShardCount = this.shardChannelCounts.get(channel) ?? 0;
-        const decrementedShard = rollbackShardCount - 1;
-        if (decrementedShard <= 0) {
-          this.shardChannelCounts.delete(channel);
-        } else {
-          this.shardChannelCounts.set(channel, decrementedShard);
-        }
-
-        // Also roll back the room subscription count we incremented above.
-        const rollbackRoomCount = this.roomSubscriptionCounts.get(roomId) ?? 0;
-        const decrementedRoom = rollbackRoomCount - 1;
-        if (decrementedRoom <= 0) {
-          this.roomSubscriptionCounts.delete(roomId);
-        } else {
-          this.roomSubscriptionCounts.set(roomId, decrementedRoom);
-        }
+        // Roll back room subscription count if LISTEN fails so our in-memory state stays consistent.
+        this.roomSubscriptionCounts.delete(roomId);
         throw err;
       }
     }
@@ -320,39 +294,26 @@ export class PostgresService implements OnModuleInit, OnModuleDestroy {
   /**
    * Unsubscribe from a room.
    *
-   * Reference-counted at the shard level: UNLISTEN only when shard count reaches 0.
-   * As with subscribe, the Map read-modify-write is synchronous and safe without a mutex;
-   * if the UNLISTEN call fails, we restore the previous count before rethrowing.
+   * Reference-counted per room: UNLISTEN only when count reaches 0.
    */
   async unsubscribeFromRoomChannel(roomId: string): Promise<void> {
     const roomCount = this.roomSubscriptionCounts.get(roomId) ?? 0;
     if (roomCount === 0) return;
 
     const newRoomCount = roomCount - 1;
-    if (newRoomCount <= 0) {
-      this.roomSubscriptionCounts.delete(roomId);
-    } else {
+    if (newRoomCount > 0) {
       this.roomSubscriptionCounts.set(roomId, newRoomCount);
+      return;
     }
 
-    const shard = getRoomShardForRoomId(roomId, PG_ROOM_SHARD_COUNT);
-    const channel = getRoomShardNotifyChannel(shard);
-    const shardCount = this.shardChannelCounts.get(channel) ?? 0;
-    if (shardCount === 0) return;
-
-    const newShardCount = shardCount - 1;
-    if (newShardCount === 0) {
-      this.shardChannelCounts.delete(channel);
-      try {
-        await this.listenClient.query(`UNLISTEN "${channel}"`);
-      } catch (err) {
-        // Restore previous count if UNLISTEN fails so we do not lose the subscription.
-        const existing = this.shardChannelCounts.get(channel) ?? 0;
-        this.shardChannelCounts.set(channel, existing + 1);
-        throw err;
-      }
-    } else {
-      this.shardChannelCounts.set(channel, newShardCount);
+    this.roomSubscriptionCounts.delete(roomId);
+    const channel = getRoomNotifyChannel(roomId);
+    try {
+      await this.listenClient.query(`UNLISTEN "${channel}"`);
+    } catch (err) {
+      // Restore previous count if UNLISTEN fails so we do not lose the subscription.
+      this.roomSubscriptionCounts.set(roomId, 1);
+      throw err;
     }
   }
 

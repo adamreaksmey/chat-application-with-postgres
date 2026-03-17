@@ -41,6 +41,10 @@ export class ChatWsService implements OnModuleDestroy {
   private readonly userSockets = new Map<string, Set<AuthedWebSocket>>();
   private readonly roomSockets = new Map<string, Set<AuthedWebSocket>>();
 
+  private readonly roomMessageBatchBuffers = new Map<string, unknown[]>();
+  private roomMessageBatchFlushTimer: NodeJS.Timeout | null = null;
+  private static readonly ROOM_MESSAGE_BATCH_WINDOW_MS = 20;
+
   /** Registers NOTIFY handlers that broadcast new_message, presence, and typing to room sockets. */
   constructor(
     private readonly jwtService: JwtService,
@@ -48,10 +52,7 @@ export class ChatWsService implements OnModuleDestroy {
     private readonly postgres: PostgresService,
   ) {
     this.postgres.onRoomMessage((roomId, payload) => {
-      this.broadcastToRoom(roomId, {
-        event: WsServerEvent.NewMessage,
-        data: payload,
-      });
+      this.enqueueRoomMessage(roomId, payload);
     });
 
     this.postgres.onPresence((payload) => {
@@ -92,6 +93,38 @@ export class ChatWsService implements OnModuleDestroy {
     if (this.presenceSweepInterval) {
       clearInterval(this.presenceSweepInterval);
     }
+    if (this.roomMessageBatchFlushTimer) {
+      clearTimeout(this.roomMessageBatchFlushTimer);
+      this.roomMessageBatchFlushTimer = null;
+    }
+  }
+
+  private enqueueRoomMessage(roomId: string, payload: unknown): void {
+    const buf = this.roomMessageBatchBuffers.get(roomId);
+    if (buf) {
+      buf.push(payload);
+    } else {
+      this.roomMessageBatchBuffers.set(roomId, [payload]);
+    }
+
+    if (this.roomMessageBatchFlushTimer) return;
+    this.roomMessageBatchFlushTimer = setTimeout(() => {
+      this.roomMessageBatchFlushTimer = null;
+      this.flushRoomMessageBatches();
+    }, ChatWsService.ROOM_MESSAGE_BATCH_WINDOW_MS);
+  }
+
+  private flushRoomMessageBatches(): void {
+    if (this.roomMessageBatchBuffers.size === 0) return;
+
+    for (const [roomId, batch] of this.roomMessageBatchBuffers.entries()) {
+      if (!batch.length) continue;
+      this.broadcastToRoom(roomId, {
+        event: WsServerEvent.NewMessageBatch,
+        data: batch,
+      });
+    }
+    this.roomMessageBatchBuffers.clear();
   }
 
   /** Schedules periodic deletion of stale presence rows (e.g. from crashed nodes). */
@@ -137,6 +170,7 @@ export class ChatWsService implements OnModuleDestroy {
         const frame = JSON.parse(raw.toString()) as IncomingFrame;
         await this.handleFrame(socket, frame);
       } catch (err) {
+        console.log('show raw frame', JSON.parse(raw.toString()));
         this.logger.warn('Invalid WS frame received', err as Error);
       }
     });
