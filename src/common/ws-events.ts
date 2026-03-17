@@ -14,6 +14,7 @@ export enum WsClientEvent {
 /** Events sent by the server to the client (outgoing frames). */
 export enum WsServerEvent {
   NewMessage = 'new_message',
+  NewMessageBatch = 'new_message_batch',
   UserJoined = 'user_joined',
   UserLeft = 'user_left',
   Presence = 'presence',

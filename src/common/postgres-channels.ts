@@ -8,7 +8,7 @@ export enum PgNotifyChannel {
   Typing = 'typing',
 }
 
-/** Prefix for per-room NOTIFY channels. Full channel is `room:{roomId}`. */
+/** Prefix for per-room message NOTIFY channels (channel is `room:{roomId}`). */
 export const PG_ROOM_CHANNEL_PREFIX = 'room:';
 
 /** Build the NOTIFY channel name for a room. */

@@ -62,11 +62,11 @@ export const options = {
 
 // ── env ───────────────────────────────────────────────────────────
 const fixedUserTokens = [
-  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIwMTljZmI2NC00ZTNmLTc4YzgtYWU1ZC05MmI0ZWRkNDA3YmMiLCJ1c2VybmFtZSI6InRlc3RpbmdwZXJzb24xIiwiaWF0IjoxNzczNzQ0MTgwLCJleHAiOjE3NzQzNDg5ODB9.WKCPXv84Ekq5yowh7eicx0zum6dqPXJspuSt8j4uEfE',
-  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIwMTljZmI2NC1mNGM0LTcxMmQtYjcyZS1kYTVmMDJhZDA3NjciLCJ1c2VybmFtZSI6InRlc3RpbmdwZXJzb24yIiwiaWF0IjoxNzczNzQ0MjIzLCJleHAiOjE3NzQzNDkwMjN9.e2_4RLhcs2GUs3KwMUUA0H2H_L3k5JMiYVw3Xyz81Uc',
-  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIwMTljZmI2NS0yZGU2LTczNTAtYjJmMi1kOTZkYjEwMmVlNGQiLCJ1c2VybmFtZSI6InRlc3RpbmdwZXJzb24zIiwiaWF0IjoxNzczNzQ0MjM4LCJleHAiOjE3NzQzNDkwMzh9.6ZygjJ29wY4-yVMnkweedS4oZ7BiCY-QGlpoXD1p7U0',
+  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIwMTljZmJhMS1lMTAyLTc5NDgtYTZlYi1mMjBlZWFlY2IzYmIiLCJ1c2VybmFtZSI6InRlc3RpbmdwZXJzb24xIiwiaWF0IjoxNzczNzQ4MjE2LCJleHAiOjE3NzQzNTMwMTZ9.JZ8fsjfe67z9JFa6I8AIeZ5iO50-oxS8g4P6vyWZTCY',
+  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIwMTljZmJhMi02YzlhLTdmMGItOWRhMS1iM2VhZjA3YmNlMWMiLCJ1c2VybmFtZSI6InRlc3RpbmdwZXJzb24yIiwiaWF0IjoxNzczNzQ4MjUxLCJleHAiOjE3NzQzNTMwNTF9.ud_zIa3KjFmxH77P8Hyx_z7dGDptw1ZAYPHSaa-EG84',
+  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIwMTljZmJhMi1iMWNhLTc4OTQtOTA2My1mN2ZhMWUwMTViNGMiLCJ1c2VybmFtZSI6InRlc3RpbmdwZXJzb24zIiwiaWF0IjoxNzczNzQ4MjY5LCJleHAiOjE3NzQzNTMwNjl9.EAVnHX_bRwAmP8OzC01Az_5ZszqbwwhtdzHAU_MGgJ8',
 ].join(',');
-const fixedRoomId = '019cfb65-c5b6-7e11-b1ec-c951c810d10b';
+const fixedRoomId = '019cfba3-33f7-7ad2-9d14-9ec5f6edc7d9';
 
 const ROOM_IDS_RAW = fixedRoomId || __ENV.ROOM_IDS || __ENV.ROOM_ID || '';
 const ROOM_IDS = ROOM_IDS_RAW.split(',')
@@ -241,6 +241,19 @@ function runSender(url, roomId) {
             pending.delete(frame.data && frame.data.content);
           }
         }
+        if (frame.event === 'new_message_batch' && Array.isArray(frame.data)) {
+          for (const msg of frame.data) {
+            const valid = isValidNewMessagePayload(msg);
+            payloadValidRate.add(valid);
+            const sentAt = pending.get(msg && msg.content);
+            if (sentAt) {
+              deliveryLatency.add(Date.now() - sentAt);
+              deliveryRate.add(valid);
+              msgDelivered.add(1);
+              pending.delete(msg && msg.content);
+            }
+          }
+        }
       } catch (e) {
         console.error('Error parsing message', e);
       }
@@ -298,6 +311,21 @@ function runReceiver(url, roomId) {
             else seenSeqs.add(seq);
             if (seq <= lastSeq) seqOutOfOrderCount.add(1);
             else lastSeq = seq;
+          }
+        }
+        if (frame.event === 'new_message_batch' && Array.isArray(frame.data)) {
+          for (const msg of frame.data) {
+            const valid = isValidNewMessagePayload(msg);
+            payloadValidRate.add(valid);
+            msgDelivered.add(1);
+            received++;
+            if (valid && msg) {
+              const seq = msg.seq;
+              if (seenSeqs.has(seq)) seqDuplicateCount.add(1);
+              else seenSeqs.add(seq);
+              if (seq <= lastSeq) seqOutOfOrderCount.add(1);
+              else lastSeq = seq;
+            }
           }
         }
       } catch (e) {

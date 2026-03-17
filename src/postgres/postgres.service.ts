@@ -48,8 +48,8 @@ export class PostgresService implements OnModuleInit, OnModuleDestroy {
   private readonly connectionString: string;
   private nodeId!: string;
   private readonly emitter = new EventEmitter();
-  /** Room channel name -> subscriber count. LISTEN only when count goes 0→1; UNLISTEN when count reaches 0. */
-  private readonly roomChannelCounts = new Map<string, number>();
+  /** Room id -> subscriber count. LISTEN only when count goes 0→1; UNLISTEN when count reaches 0. */
+  private readonly roomSubscriptionCounts = new Map<string, number>();
   private destroyed = false;
   private reconnectBackoffMs = INITIAL_RECONNECT_MS;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -148,9 +148,9 @@ export class PostgresService implements OnModuleInit, OnModuleDestroy {
       if (!payload) return;
 
       if (channel.startsWith(PG_ROOM_CHANNEL_PREFIX)) {
-        const roomId = channel.slice(PG_ROOM_CHANNEL_PREFIX.length);
         try {
           const data = JSON.parse(payload) as RoomMessagePayload;
+          const roomId = channel.slice(PG_ROOM_CHANNEL_PREFIX.length);
           this.emitter.emit(PgEmitterEvent.RoomMessage, roomId, data);
         } catch (err: unknown) {
           if (err instanceof Error) {
@@ -188,8 +188,8 @@ export class PostgresService implements OnModuleInit, OnModuleDestroy {
   private async ensureListenChannels(client: Client): Promise<void> {
     await client.query(`LISTEN "${PgNotifyChannel.Presence}"`);
     await client.query(`LISTEN "${PgNotifyChannel.Typing}"`);
-    for (const channel of this.roomChannelCounts.keys()) {
-      await client.query(`LISTEN "${channel}"`);
+    for (const roomId of this.roomSubscriptionCounts.keys()) {
+      await client.query(`LISTEN "${getRoomNotifyChannel(roomId)}"`);
     }
   }
 
@@ -270,61 +270,50 @@ export class PostgresService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
-   * Subscribe to Postgres notifications for a specific room channel.
+   * Subscribe to Postgres notifications for a specific room.
    *
-   * Reference-counted: LISTEN is issued only when subscriber count goes 0 → 1.
-   * The Map update is safe without a mutex because Node.js is single-threaded
-   * and there is no await between the read and the write; the only async
-   * failure surface is the LISTEN call itself, which we roll back on error.
+   * Reference-counted per room: LISTEN is issued only when count goes 0 → 1.
    */
   async subscribeToRoomChannel(roomId: string): Promise<void> {
-    const channel = getRoomNotifyChannel(roomId);
-    const count = this.roomChannelCounts.get(channel) ?? 0;
-    const newCount = count + 1;
-    this.roomChannelCounts.set(channel, newCount);
+    const roomCount = this.roomSubscriptionCounts.get(roomId) ?? 0;
+    const next = roomCount + 1;
+    this.roomSubscriptionCounts.set(roomId, next);
 
-    if (count === 0) {
+    if (roomCount === 0) {
+      const channel = getRoomNotifyChannel(roomId);
       try {
         await this.listenClient.query(`LISTEN "${channel}"`);
       } catch (err) {
-        // Roll back ref count if LISTEN fails so our in-memory state stays consistent.
-        const rollbackCount = this.roomChannelCounts.get(channel) ?? 0;
-        const decremented = rollbackCount - 1;
-        if (decremented <= 0) {
-          this.roomChannelCounts.delete(channel);
-        } else {
-          this.roomChannelCounts.set(channel, decremented);
-        }
+        // Roll back room subscription count if LISTEN fails so our in-memory state stays consistent.
+        this.roomSubscriptionCounts.delete(roomId);
         throw err;
       }
     }
   }
 
   /**
-   * Unsubscribe from a room channel.
+   * Unsubscribe from a room.
    *
-   * Reference-counted: UNLISTEN only when count reaches 0. As with subscribe,
-   * the Map read-modify-write is synchronous and safe without a mutex; if the
-   * UNLISTEN call fails, we restore the previous count before rethrowing.
+   * Reference-counted per room: UNLISTEN only when count reaches 0.
    */
   async unsubscribeFromRoomChannel(roomId: string): Promise<void> {
-    const channel = getRoomNotifyChannel(roomId);
-    const count = this.roomChannelCounts.get(channel) ?? 0;
-    if (count === 0) return;
+    const roomCount = this.roomSubscriptionCounts.get(roomId) ?? 0;
+    if (roomCount === 0) return;
 
-    const newCount = count - 1;
-    if (newCount === 0) {
-      this.roomChannelCounts.delete(channel);
-      try {
-        await this.listenClient.query(`UNLISTEN "${channel}"`);
-      } catch (err) {
-        // Restore previous count if UNLISTEN fails so we do not lose the subscription.
-        const existing = this.roomChannelCounts.get(channel) ?? 0;
-        this.roomChannelCounts.set(channel, existing + 1);
-        throw err;
-      }
-    } else {
-      this.roomChannelCounts.set(channel, newCount);
+    const newRoomCount = roomCount - 1;
+    if (newRoomCount > 0) {
+      this.roomSubscriptionCounts.set(roomId, newRoomCount);
+      return;
+    }
+
+    this.roomSubscriptionCounts.delete(roomId);
+    const channel = getRoomNotifyChannel(roomId);
+    try {
+      await this.listenClient.query(`UNLISTEN "${channel}"`);
+    } catch (err) {
+      // Restore previous count if UNLISTEN fails so we do not lose the subscription.
+      this.roomSubscriptionCounts.set(roomId, 1);
+      throw err;
     }
   }
 
