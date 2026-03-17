@@ -62,11 +62,11 @@ export const options = {
 
 // ── env ───────────────────────────────────────────────────────────
 const fixedUserTokens = [
-  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIwMTljZmIxYy0zZGQzLTc0OWMtYmZhOC1hOWQ2NGEyZmFhMmYiLCJ1c2VybmFtZSI6InRlc3RpbmdwZXJzb24xIiwiaWF0IjoxNzczNzM5NDU4LCJleHAiOjE3NzQzNDQyNTh9.Unuqe7RoLcwtzXFo0AyXac_h16_G1JALtIQxuGDCvkI',
-  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIwMTljZmIxZC0xYTgxLTcyMjQtYTliOC1jNDFhMDAyNWY1N2YiLCJ1c2VybmFtZSI6InRlc3RpbmdwZXJzb24yIiwiaWF0IjoxNzczNzM5NTE0LCJleHAiOjE3NzQzNDQzMTR9.FpImUrnaLP2AOwWxK-mV7nDBfTCroUOhJTk_uuI1JOI',
-  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIwMTljZmIxZC01OGYwLTc3OTEtYjJkMi1hNTQyYzZiNGJlYzEiLCJ1c2VybmFtZSI6InRlc3RpbmdwZXJzb24zIiwiaWF0IjoxNzczNzM5NTMwLCJleHAiOjE3NzQzNDQzMzB9.V3SmmeB8-zejJOaWYryVxqfc0suhTCwDON3_dP7oOGk',
+  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIwMTljZmI2NC00ZTNmLTc4YzgtYWU1ZC05MmI0ZWRkNDA3YmMiLCJ1c2VybmFtZSI6InRlc3RpbmdwZXJzb24xIiwiaWF0IjoxNzczNzQ0MTgwLCJleHAiOjE3NzQzNDg5ODB9.WKCPXv84Ekq5yowh7eicx0zum6dqPXJspuSt8j4uEfE',
+  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIwMTljZmI2NC1mNGM0LTcxMmQtYjcyZS1kYTVmMDJhZDA3NjciLCJ1c2VybmFtZSI6InRlc3RpbmdwZXJzb24yIiwiaWF0IjoxNzczNzQ0MjIzLCJleHAiOjE3NzQzNDkwMjN9.e2_4RLhcs2GUs3KwMUUA0H2H_L3k5JMiYVw3Xyz81Uc',
+  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIwMTljZmI2NS0yZGU2LTczNTAtYjJmMi1kOTZkYjEwMmVlNGQiLCJ1c2VybmFtZSI6InRlc3RpbmdwZXJzb24zIiwiaWF0IjoxNzczNzQ0MjM4LCJleHAiOjE3NzQzNDkwMzh9.6ZygjJ29wY4-yVMnkweedS4oZ7BiCY-QGlpoXD1p7U0',
 ].join(',');
-const fixedRoomId = '019ce764-34e8-7a65-a536-3fb7f277b2ff';
+const fixedRoomId = '019cfb65-c5b6-7e11-b1ec-c951c810d10b';
 
 const ROOM_IDS_RAW = fixedRoomId || __ENV.ROOM_IDS || __ENV.ROOM_ID || '';
 const ROOM_IDS = ROOM_IDS_RAW.split(',')

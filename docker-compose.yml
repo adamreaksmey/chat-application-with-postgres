@@ -1,26 +1,16 @@
 services:
   postgres:
     image: postgres:18-alpine
-    command: >
-      postgres
-      -c checkpoint_completion_target=0.9
-      -c checkpoint_timeout=15min
-      -c max_wal_size=2GB
-      -c wal_level=logical
-      -c max_wal_senders=20
-    # checkpoint_completion_target=0.9  — spreads checkpoint I/O over 90% of the checkpoint interval, reducing write spikes
-    # checkpoint_timeout=15min          — less frequent checkpoints, fewer stall windows during heavy insert load
-    # max_wal_size=2GB                  — gives WAL more room before forcing an emergency checkpoint
-    # wal_level=logical                 — required for LISTEN/NOTIFY to work correctly under replication setups
-    # max_wal_senders=20                — allows more concurrent NOTIFY listeners without Postgres throttling
     environment:
       POSTGRES_USER: chat
       POSTGRES_PASSWORD: chat
       POSTGRES_DB: chat
+      PGDATA: /var/lib/postgresql/data
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./pg-custom.conf:/docker-entrypoint-initdb.d/pg-custom.conf:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U chat -d chat"]
       interval: 5s
