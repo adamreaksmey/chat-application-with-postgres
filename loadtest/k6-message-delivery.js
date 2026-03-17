@@ -34,15 +34,15 @@ export const options = {
       executor: 'ramping-vus',
       startVUs: 0,
       stages: [
-        { duration: '15s', target: __ENV.SENDER_VUS || 80 },
-        { duration: '2m30s', target: __ENV.SENDER_VUS || 80 },
+        { duration: '15s', target: __ENV.SENDER_VUS || 120 },
+        { duration: '2m30s', target: __ENV.SENDER_VUS || 120 },
         { duration: '15s', target: 0 },
       ],
       env: { SCENARIO: 'sender' },
     },
     receivers: {
       executor: 'constant-vus',
-      vus: __ENV.RECEIVER_VUS || 200,
+      vus: __ENV.RECEIVER_VUS || 300,
       duration: '3m',
       env: { SCENARIO: 'receiver' },
       startTime: '5s',
