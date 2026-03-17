@@ -178,13 +178,3 @@ docker run --rm --network host \
 ```
 
 After the run, see `loadtest/POST-RUN-CHECKLIST.md` for what to verify. If the run stops abruptly with no summary (e.g. OOM), check that doc and `loadtest/summary.txt` (written when k6 exits normally).
-
-### Does the load test hit all 3 app instances?
-
-Yes. When you use `WS_URL=ws://localhost/ws` (or the default), k6 connects to whatever is on that URL. With Docker Compose, Nginx listens on port 80 and proxies WebSocket to the three app containers (app-1, app-2, app-3). So connections and `send_message` traffic can land on any of the three; you should see logs from whichever instance handles each connection.
-
-### No logs and no rows in `messages`?
-
-- **Token:** Use a **valid** JWT access token (from login or register). If in doubt, issue a new one and set `ACCESS_TOKEN`. The token’s user must be a **member** of the room (create the room with that user or call `POST /rooms/:id/join` with the same token).
-- **Env in the k6 container:** Ensure `ACCESS_TOKEN` and `ROOM_ID` are set when you run the load test (e.g. `export` them before `npm run loadtest`, or pass `-e "ACCESS_TOKEN=..."` and `-e "ROOM_ID=..."` to `docker run`). If either is empty, the script has no room or token and will not send messages correctly.
-- **App logs:** The app logs `WS connected userId=...` on each authenticated connection and `send_message room=... user=...` / `inserting message room=... user=...` when a message is processed. If you see no logs at all, k6 may be connecting to a different host/port than your stack (e.g. wrong `WS_URL` or nothing listening).
