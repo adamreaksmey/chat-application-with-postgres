@@ -61,11 +61,18 @@ export const options = {
 };
 
 // ── env ───────────────────────────────────────────────────────────
-const ROOM_IDS_RAW = __ENV.ROOM_IDS || __ENV.ROOM_ID || '';
+const fixedUserTokens = [
+  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIwMTljZmIxYy0zZGQzLTc0OWMtYmZhOC1hOWQ2NGEyZmFhMmYiLCJ1c2VybmFtZSI6InRlc3RpbmdwZXJzb24xIiwiaWF0IjoxNzczNzM5NDU4LCJleHAiOjE3NzQzNDQyNTh9.Unuqe7RoLcwtzXFo0AyXac_h16_G1JALtIQxuGDCvkI',
+  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIwMTljZmIxZC0xYTgxLTcyMjQtYTliOC1jNDFhMDAyNWY1N2YiLCJ1c2VybmFtZSI6InRlc3RpbmdwZXJzb24yIiwiaWF0IjoxNzczNzM5NTE0LCJleHAiOjE3NzQzNDQzMTR9.FpImUrnaLP2AOwWxK-mV7nDBfTCroUOhJTk_uuI1JOI',
+  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIwMTljZmIxZC01OGYwLTc3OTEtYjJkMi1hNTQyYzZiNGJlYzEiLCJ1c2VybmFtZSI6InRlc3RpbmdwZXJzb24zIiwiaWF0IjoxNzczNzM5NTMwLCJleHAiOjE3NzQzNDQzMzB9.V3SmmeB8-zejJOaWYryVxqfc0suhTCwDON3_dP7oOGk',
+].join(',');
+const fixedRoomId = '019ce764-34e8-7a65-a536-3fb7f277b2ff';
+
+const ROOM_IDS_RAW = fixedRoomId || __ENV.ROOM_IDS || __ENV.ROOM_ID || '';
 const ROOM_IDS = ROOM_IDS_RAW.split(',')
   .map((s) => s.trim())
   .filter(Boolean);
-const TOKENS_RAW = __ENV.TOKENS || __ENV.ACCESS_TOKEN || '';
+const TOKENS_RAW = fixedUserTokens || __ENV.TOKENS || __ENV.ACCESS_TOKEN || '';
 const TOKENS = TOKENS_RAW.split(',')
   .map((s) => s.trim())
   .filter(Boolean);
