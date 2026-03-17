@@ -34,15 +34,15 @@ export const options = {
       executor: 'ramping-vus',
       startVUs: 0,
       stages: [
-        { duration: '15s', target: __ENV.SENDER_VUS || 80 },
-        { duration: '2m30s', target: __ENV.SENDER_VUS || 80 },
+        { duration: '15s', target: __ENV.SENDER_VUS || 120 },
+        { duration: '2m30s', target: __ENV.SENDER_VUS || 120 },
         { duration: '15s', target: 0 },
       ],
       env: { SCENARIO: 'sender' },
     },
     receivers: {
       executor: 'constant-vus',
-      vus: __ENV.RECEIVER_VUS || 200,
+      vus: __ENV.RECEIVER_VUS || 300,
       duration: '3m',
       env: { SCENARIO: 'receiver' },
       startTime: '5s',
@@ -61,11 +61,18 @@ export const options = {
 };
 
 // ── env ───────────────────────────────────────────────────────────
-const ROOM_IDS_RAW = __ENV.ROOM_IDS || __ENV.ROOM_ID || '';
+const fixedUserTokens = [
+  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIwMTljZmI2NC00ZTNmLTc4YzgtYWU1ZC05MmI0ZWRkNDA3YmMiLCJ1c2VybmFtZSI6InRlc3RpbmdwZXJzb24xIiwiaWF0IjoxNzczNzQ0MTgwLCJleHAiOjE3NzQzNDg5ODB9.WKCPXv84Ekq5yowh7eicx0zum6dqPXJspuSt8j4uEfE',
+  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIwMTljZmI2NC1mNGM0LTcxMmQtYjcyZS1kYTVmMDJhZDA3NjciLCJ1c2VybmFtZSI6InRlc3RpbmdwZXJzb24yIiwiaWF0IjoxNzczNzQ0MjIzLCJleHAiOjE3NzQzNDkwMjN9.e2_4RLhcs2GUs3KwMUUA0H2H_L3k5JMiYVw3Xyz81Uc',
+  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIwMTljZmI2NS0yZGU2LTczNTAtYjJmMi1kOTZkYjEwMmVlNGQiLCJ1c2VybmFtZSI6InRlc3RpbmdwZXJzb24zIiwiaWF0IjoxNzczNzQ0MjM4LCJleHAiOjE3NzQzNDkwMzh9.6ZygjJ29wY4-yVMnkweedS4oZ7BiCY-QGlpoXD1p7U0',
+].join(',');
+const fixedRoomId = '019cfb65-c5b6-7e11-b1ec-c951c810d10b';
+
+const ROOM_IDS_RAW = fixedRoomId || __ENV.ROOM_IDS || __ENV.ROOM_ID || '';
 const ROOM_IDS = ROOM_IDS_RAW.split(',')
   .map((s) => s.trim())
   .filter(Boolean);
-const TOKENS_RAW = __ENV.TOKENS || __ENV.ACCESS_TOKEN || '';
+const TOKENS_RAW = fixedUserTokens || __ENV.TOKENS || __ENV.ACCESS_TOKEN || '';
 const TOKENS = TOKENS_RAW.split(',')
   .map((s) => s.trim())
   .filter(Boolean);
