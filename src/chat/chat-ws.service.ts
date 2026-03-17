@@ -9,6 +9,7 @@ import { WsClientEvent, WsServerEvent } from '../common/ws-events';
 import { WS_BACKPRESSURE_THRESHOLD_BYTES } from '../common/chat-limits';
 import {
   ValidationError,
+  ValidationResult,
   validateJoinRoomPayload,
   validateLeaveRoomPayload,
   validateSendMessagePayload,
@@ -190,16 +191,7 @@ export class ChatWsService implements OnModuleDestroy {
     const [, queryString] = url.split('?');
     const query: ParsedUrlQuery = queryString ? parseQuery(queryString) : {};
 
-    let token: string | undefined;
-
-    if (typeof query.token === 'string') {
-      token = query.token;
-    }
-
-    if (!token && req.headers.authorization?.startsWith('Bearer ')) {
-      token = req.headers.authorization.slice('Bearer '.length);
-    }
-
+    const token = this.extractToken(query, req);
     if (!token) {
       return null;
     }
@@ -212,6 +204,23 @@ export class ChatWsService implements OnModuleDestroy {
     } catch {
       return null;
     }
+  }
+
+  private extractToken(query: ParsedUrlQuery, req: IncomingMessage) {
+    let returnedToken: string | null;
+    if (typeof query.token === 'string') {
+      returnedToken = query.token;
+    }
+
+    if (!returnedToken && req.headers.authorization?.startsWith('Bearer ')) {
+      returnedToken = req.headers.authorization.slice('Bearer '.length);
+    }
+
+    if (!returnedToken) {
+      return null;
+    }
+
+    return returnedToken;
   }
 
   private sendError(socket: WebSocket, message: string, code?: string): void {
@@ -240,72 +249,57 @@ export class ChatWsService implements OnModuleDestroy {
 
     const { event, data } = frame;
 
+    //helper
+    const validate = <T>(
+      validator: (payload: unknown) => ValidationResult<T>,
+    ): T | null => {
+      const result = validator(data);
+      if (!result.valid) {
+        const err = result as ValidationError;
+        this.sendError(socket, err.message, err.code);
+        return null;
+      }
+      return result.payload;
+    };
+
     switch (event) {
       case WsClientEvent.JoinRoom: {
-        const result = validateJoinRoomPayload(data);
-        if (!result.valid) {
-          const err = result as ValidationError;
-          this.sendError(socket, err.message, err.code);
-          return;
-        }
-        this.addSocketToRoom(result.payload.room_id, socket);
-        await this.chatService.handleJoinRoom(userId, socket, result.payload);
+        const payload = validate(validateJoinRoomPayload);
+        if (!payload) return;
+        this.addSocketToRoom(payload.room_id, socket);
+        await this.chatService.handleJoinRoom(userId, socket, payload);
         break;
       }
 
       case WsClientEvent.LeaveRoom: {
-        const result = validateLeaveRoomPayload(data);
-        if (!result.valid) {
-          const err = result as ValidationError;
-          this.sendError(socket, err.message, err.code);
-          return;
-        }
-        this.removeSocketFromRoom(result.payload.room_id, socket);
-        await this.chatService.handleLeaveRoom(userId, result.payload);
+        const payload = validate(validateLeaveRoomPayload);
+        if (!payload) return;
+        this.removeSocketFromRoom(payload.room_id, socket);
+        await this.chatService.handleLeaveRoom(userId, payload);
         break;
       }
 
       case WsClientEvent.SendMessage: {
-        const result = validateSendMessagePayload(data);
-        if (!result.valid) {
-          const err = result as ValidationError;
-          this.sendError(socket, err.message, err.code);
-          return;
-        }
+        const payload = validate(validateSendMessagePayload);
+        if (!payload) return;
         this.logger.log(
-          `send_message room=${result.payload.room_id} user=${userId} len=${result.payload.content.length}`,
+          `send_message room=${payload.room_id} user=${userId} len=${payload.content.length}`,
         );
-        await this.chatService.handleSendMessage(
-          userId,
-          socket,
-          result.payload,
-        );
+        await this.chatService.handleSendMessage(userId, socket, payload);
         break;
       }
 
       case WsClientEvent.TypingStart: {
-        const result = validateTypingPayload(data);
-        if (!result.valid) {
-          const err = result as ValidationError;
-          this.sendError(socket, err.message, err.code);
-          return;
-        }
-        await this.chatService.handleTypingStart(
-          userId,
-          socket,
-          result.payload,
-        );
+        const payload = validate(validateTypingPayload);
+        if (!payload) return;
+        await this.chatService.handleTypingStart(userId, socket, payload);
         break;
       }
 
       case WsClientEvent.TypingStop: {
-        const result = validateTypingPayload(data);
-        if (!result.valid) {
-          const err = result as ValidationError;
-          this.sendError(socket, err.message, err.code);
-          return;
-        }
-        await this.chatService.handleTypingStop(userId, result.payload);
+        const payload = validate(validateTypingPayload);
+        if (!payload) return;
+        await this.chatService.handleTypingStop(userId, payload);
         break;
       }
 
@@ -374,28 +368,28 @@ export class ChatWsService implements OnModuleDestroy {
    * by the rollback logic in PostgresService.
    */
   private cleanupSocket(socket: AuthedWebSocket): void {
-    const userId = socket.userId;
-    if (userId) {
-      const socketsForUser = this.userSockets.get(userId);
-      if (socketsForUser) {
-        socketsForUser.delete(socket);
-        if (socketsForUser.size === 0) {
-          this.userSockets.delete(userId);
-        }
+    // Remove socket from user mapping
+    if (socket.userId) {
+      const userSockets = this.userSockets.get(socket.userId);
+      if (userSockets) {
+        userSockets.delete(socket);
+        if (userSockets.size === 0) this.userSockets.delete(socket.userId);
       }
     }
 
-    for (const [roomId, sockets] of this.roomSockets.entries()) {
-      if (sockets.has(socket)) {
-        sockets.delete(socket);
-        if (sockets.size === 0) {
-          this.roomSockets.delete(roomId);
-          this.postgres
-            .unsubscribeFromRoomChannel(roomId)
-            .catch((err) =>
-              this.logger.warn('Unsubscribe room channel failed', err),
-            );
-        }
+    // Remove socket from all rooms it belongs to
+    for (const [roomId, roomSockets] of this.roomSockets.entries()) {
+      if (!roomSockets.has(socket)) continue;
+
+      roomSockets.delete(socket);
+
+      if (roomSockets.size === 0) {
+        this.roomSockets.delete(roomId);
+        this.postgres
+          .unsubscribeFromRoomChannel(roomId)
+          .catch((err) =>
+            this.logger.warn('Failed to unsubscribe from room channel', err),
+          );
       }
     }
   }
@@ -410,31 +404,29 @@ export class ChatWsService implements OnModuleDestroy {
     message: { event: string; data: unknown },
   ): void {
     const sockets = this.roomSockets.get(roomId);
-    if (!sockets || sockets.size === 0) return;
+    if (!sockets?.size) return;
 
     const payload = JSON.stringify(message);
-    const targets = [...sockets].filter(
-      (s) =>
-        s.readyState === WebSocket.OPEN &&
-        s.bufferedAmount <= WS_BACKPRESSURE_THRESHOLD_BYTES,
+    const openSockets = Array.from(sockets).filter(
+      (socket) =>
+        socket.readyState === WebSocket.OPEN &&
+        socket.bufferedAmount <= WS_BACKPRESSURE_THRESHOLD_BYTES,
     );
 
     const CHUNK_SIZE = 50;
-    let offset = 0;
 
-    const sendChunk = () => {
-      const end = Math.min(offset + CHUNK_SIZE, targets.length);
-      for (let i = offset; i < end; i++) {
+    const sendChunks = (start = 0) => {
+      const end = Math.min(start + CHUNK_SIZE, openSockets.length);
+      for (let i = start; i < end; i++) {
         try {
-          targets[i].send(payload);
-        } catch {}
+          openSockets[i].send(payload);
+        } catch {
+          // ignore send errors
+        }
       }
-      offset = end;
-      if (offset < targets.length) {
-        setImmediate(sendChunk); // yield to event loop between chunks
-      }
+      if (end < openSockets.length) setImmediate(() => sendChunks(end));
     };
 
-    setImmediate(sendChunk);
+    setImmediate(() => sendChunks());
   }
 }
