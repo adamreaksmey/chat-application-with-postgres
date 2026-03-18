@@ -1,0 +1,28 @@
+    ✓ join_room succeeded (user must be room member)
+     ✓ receiver received messages
+     ✗ sender completed
+      ↳  99% — ✓ 119 / ✗ 1
+
+     checks..................: 99.93%  ✓ 1439        ✗ 1    
+     data_received...........: 1.1 GB  5.2 MB/s
+     data_sent...............: 2.6 MB  12 kB/s
+   ✗ delivery_latency_ms.....: avg=196.02ms min=1ms      med=35ms     max=4.46s    p(90)=575ms    p(95)=1.11s   
+   ✓ delivery_success_rate...: 99.35%  ✓ 18053       ✗ 117  
+     iteration_duration......: avg=1m35s    min=1m30s    med=1m30s    max=2m1s     p(90)=2m0s     p(95)=2m0s    
+     iterations..............: 720     3.428464/s
+     messages_delivered......: 2639157 12567.02126/s
+     messages_sent...........: 18480   87.997248/s
+   ✓ payload_valid_rate......: 100.00% ✓ 4430777     ✗ 0    
+   ✓ seq_duplicates..........: 0       0/s
+   ✓ seq_out_of_order........: 0       0/s
+     vus.....................: 1       min=1         max=420
+     vus_max.................: 420     min=420       max=420
+   ✓ ws_connecting...........: avg=158.29ms min=427.87µs med=127.46ms max=537.84ms p(90)=345.87ms p(95)=398.27ms
+   ✓ ws_msgs_received........: 593835  2827.69728/s
+     ws_msgs_sent............: 19320   91.997123/s
+     ws_session_duration.....: avg=1m35s    min=1m30s    med=1m30s    max=2m1s     p(90)=2m0s     p(95)=2m0s    
+     ws_sessions.............: 840     3.999875/s
+running (3m30.0s), 000/420 VUs, 720 complete and 120 interrupted iterations
+senders   ✓ [ 100% ] 001/120 VUs  3m0s
+receivers ✓ [ 100% ] 300 VUs      3m0s
+time="2026-03-18T07:02:30Z" level=error msg="thresholds on metrics 'delivery_latency_ms' have been crossed"

@@ -12,7 +12,7 @@ import { Counter, Rate, Trend } from 'k6/metrics';
 import encoding from 'k6/encoding';
 import { textSummary } from 'https://jslib.k6.io/k6-summary/0.0.2/index.js';
 
-// ── delivery-focused metrics ─────────────────────────────────────
+// ── metrics ───────────────────────────────────────────────────────
 const msgDelivered = new Counter('messages_delivered');
 const msgSent = new Counter('messages_sent');
 const deliveryRate = new Rate('delivery_success_rate');
@@ -21,24 +21,33 @@ const payloadValidRate = new Rate('payload_valid_rate');
 const seqDuplicateCount = new Counter('seq_duplicates');
 const seqOutOfOrderCount = new Counter('seq_out_of_order');
 
+// ── options ───────────────────────────────────────────────────────
+const SENDER_VUS = Number(__ENV.SENDER_VUS || 120);
+const RECEIVER_VUS = Number(__ENV.RECEIVER_VUS || 300);
+
+// Receivers start after senders have fully ramped up (15s ramp + small buffer).
+// This prevents early delivery numbers being skewed by receivers that haven't
+// connected yet when the first wave of senders starts firing.
+const RECEIVER_START_DELAY = '20s';
+
 export const options = {
   scenarios: {
     senders: {
       executor: 'ramping-vus',
       startVUs: 0,
       stages: [
-        { duration: '15s', target: __ENV.SENDER_VUS || 120 },
-        { duration: '2m30s', target: __ENV.SENDER_VUS || 120 },
+        { duration: '15s', target: SENDER_VUS },
+        { duration: '2m30s', target: SENDER_VUS },
         { duration: '15s', target: 0 },
       ],
       env: { SCENARIO: 'sender' },
     },
     receivers: {
       executor: 'constant-vus',
-      vus: __ENV.RECEIVER_VUS || 300,
+      vus: RECEIVER_VUS,
       duration: '3m',
       env: { SCENARIO: 'receiver' },
-      startTime: '5s',
+      startTime: RECEIVER_START_DELAY,
     },
   },
 
@@ -61,24 +70,26 @@ const fixedUserTokens = [
 ].join(',');
 const fixedRoomId = '019cfba3-33f7-7ad2-9d14-9ec5f6edc7d9';
 
-const ROOM_IDS_RAW = fixedRoomId || __ENV.ROOM_IDS || __ENV.ROOM_ID || '';
-const ROOM_IDS = ROOM_IDS_RAW.split(',')
-  .map((s) => s.trim())
-  .filter(Boolean);
-const TOKENS_RAW = fixedUserTokens || __ENV.TOKENS || __ENV.ACCESS_TOKEN || '';
-const TOKENS = TOKENS_RAW.split(',')
-  .map((s) => s.trim())
-  .filter(Boolean);
-const WS_URL = __ENV.WS_URL || 'ws://localhost/ws';
-const NODE_URLS = (__ENV.NODE_URLS || WS_URL)
-  .split(',')
-  .map((s) => s.trim())
-  .filter(Boolean);
-
-function pickRandom(arr) {
-  return arr.length ? arr[Math.floor(Math.random() * arr.length)] : undefined;
+function parseList(raw) {
+  return (raw || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
 }
 
+const ROOM_IDS = parseList(fixedRoomId || __ENV.ROOM_IDS || __ENV.ROOM_ID);
+const TOKENS = parseList(fixedUserTokens || __ENV.TOKENS || __ENV.ACCESS_TOKEN);
+const WS_URL = __ENV.WS_URL || 'ws://localhost/ws';
+const NODE_URLS = parseList(__ENV.NODE_URLS || WS_URL);
+
+const MESSAGES_PER_VU = Number(__ENV.MESSAGES_PER_VU || 80);
+const MESSAGE_INTERVAL_MS = Number(__ENV.MESSAGE_INTERVAL_MS || 80);
+
+function pickRandom(arr) {
+  return arr[Math.floor(Math.random() * arr.length)];
+}
+
+// ── JWT validation ────────────────────────────────────────────────
 function validateJwt(token) {
   if (!token || typeof token !== 'string') {
     return { valid: false, reason: 'Token is missing or not a string' };
@@ -93,8 +104,7 @@ function validateJwt(token) {
   let payloadStr;
   try {
     payloadStr = encoding.b64decode(parts[1], 'rawurl', 's');
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  } catch (e) {
+  } catch {
     return {
       valid: false,
       reason: 'Invalid token: payload is not valid base64url',
@@ -103,36 +113,32 @@ function validateJwt(token) {
   let payload;
   try {
     payload = JSON.parse(payloadStr);
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  } catch (e) {
+  } catch {
     return { valid: false, reason: 'Invalid token: payload is not valid JSON' };
   }
   if (!payload || typeof payload !== 'object') {
     return { valid: false, reason: 'Invalid token: payload is not an object' };
   }
   const now = Math.floor(Date.now() / 1000);
-  if (typeof payload.exp === 'number') {
-    if (payload.exp < now) {
-      return {
-        valid: false,
-        reason: `Token has expired (exp=${payload.exp}, now=${now}). Get a fresh ACCESS_TOKEN (e.g. login again).`,
-      };
-    }
+  if (typeof payload.exp === 'number' && payload.exp < now) {
+    return {
+      valid: false,
+      reason: `Token has expired (exp=${payload.exp}, now=${now}). Login again to get a fresh token.`,
+    };
   }
   return { valid: true, payload };
 }
 
+// ── setup ─────────────────────────────────────────────────────────
 export function setup() {
   if (!TOKENS.length) {
     throw new Error(
-      'ACCESS_TOKEN (or TOKENS) is required and must be non-empty. ' +
-        'Set it before running the load test (e.g. export ACCESS_TOKEN=...).',
+      'ACCESS_TOKEN (or TOKENS) is required. Set it before running the load test.',
     );
   }
   if (!ROOM_IDS.length) {
     throw new Error(
-      'ROOM_ID (or ROOM_IDS) is required and must be non-empty. ' +
-        'Set it before running the load test (e.g. export ROOM_ID=...).',
+      'ROOM_ID (or ROOM_IDS) is required. Set it before running the load test.',
     );
   }
   for (let i = 0; i < TOKENS.length; i++) {
@@ -145,21 +151,22 @@ export function setup() {
   return {};
 }
 
-function isValidNewMessagePayload(data) {
+// ── payload validation ────────────────────────────────────────────
+function isValidMessagePayload(data) {
   if (!data || typeof data !== 'object') return false;
-  const d = data;
   return (
-    typeof d.id === 'number' &&
-    typeof d.seq === 'number' &&
-    d.seq >= 1 &&
-    typeof d.room_id === 'string' &&
-    typeof d.user_id === 'string' &&
-    typeof d.username === 'string' &&
-    typeof d.content === 'string' &&
-    (typeof d.created_at === 'string' || d.created_at instanceof Date)
+    typeof data.id === 'number' &&
+    typeof data.seq === 'number' &&
+    data.seq >= 1 &&
+    typeof data.room_id === 'string' &&
+    typeof data.user_id === 'string' &&
+    typeof data.username === 'string' &&
+    typeof data.content === 'string' &&
+    (typeof data.created_at === 'string' || data.created_at instanceof Date)
   );
 }
 
+// ── main ──────────────────────────────────────────────────────────
 export default function () {
   const scenario = __ENV.SCENARIO;
   const token = pickRandom(TOKENS);
@@ -171,32 +178,62 @@ export default function () {
   if (scenario === 'receiver') runReceiver(url, roomId);
 }
 
+// ── sender ────────────────────────────────────────────────────────
 function runSender(url, roomId) {
+  // key: message content (unique per VU+iter+seq), value: sent timestamp
   const pending = new Map();
   let sendLoopStarted = false;
   let joinError = null;
   let sent = 0;
-  const total = Number(__ENV.MESSAGES_PER_VU || 80);
+
+  // Track which content strings we sent so we can correctly count
+  // undelivered messages on close regardless of batch vs single event.
+  const sentContents = new Set();
 
   ws.connect(url, {}, (socket) => {
     const startSendLoop = () => {
       if (sendLoopStarted) return;
       sendLoopStarted = true;
+
       const sendLoop = () => {
-        if (sent >= total) return;
+        if (sent >= MESSAGES_PER_VU) return;
+
+        // Content is unique per VU + iteration + position so we can match
+        // echo-backs across both new_message and new_message_batch events.
         const content = `vu${__VU}-iter${__ITER}-seq${sent}`;
         pending.set(content, Date.now());
+        sentContents.add(content);
+
         socket.send(
           JSON.stringify({
             event: 'send_message',
             data: { room_id: roomId, content },
           }),
         );
+
         msgSent.add(1);
         sent++;
-        socket.setTimeout(sendLoop, Number(__ENV.MESSAGE_INTERVAL_MS || 80));
+        socket.setTimeout(sendLoop, MESSAGE_INTERVAL_MS);
       };
+
       socket.setTimeout(sendLoop, 1);
+    };
+
+    // Helper: process one received message object (from either event type).
+    const processReceivedMessage = (msg) => {
+      const valid = isValidMessagePayload(msg);
+      payloadValidRate.add(valid);
+
+      const content = msg && msg.content;
+      const sentAt = pending.get(content);
+
+      if (sentAt !== undefined) {
+        deliveryLatency.add(Date.now() - sentAt);
+        deliveryRate.add(valid);
+        msgDelivered.add(1);
+        pending.delete(content);
+        sentContents.delete(content);
+      }
     };
 
     socket.on('open', () => {
@@ -211,49 +248,49 @@ function runSender(url, roomId) {
     socket.on('message', (raw) => {
       try {
         const frame = JSON.parse(raw);
+
         if (frame.event === 'error') {
           joinError = (frame.data && frame.data.message) || 'Unknown error';
           if (!sendLoopStarted) {
             console.error(
-              `[sender] join_room failed: ${joinError}. Join the room first: POST /rooms/:roomId/join`,
+              `[sender] join_room failed: ${joinError}. Join the room first via POST /rooms/:roomId/join`,
             );
           }
           return;
         }
+
+        // Start sending as soon as the server acknowledges we are in the room.
         if (frame.event === 'joined_room' || frame.event === 'history') {
           startSendLoop();
+          return;
         }
+
         if (frame.event === 'new_message') {
-          const valid = isValidNewMessagePayload(frame.data);
-          payloadValidRate.add(valid);
-          const sentAt = pending.get(frame.data && frame.data.content);
-          if (sentAt) {
-            deliveryLatency.add(Date.now() - sentAt);
-            deliveryRate.add(valid);
-            msgDelivered.add(1);
-            pending.delete(frame.data && frame.data.content);
-          }
+          processReceivedMessage(frame.data);
+          return;
         }
+
         if (frame.event === 'new_message_batch' && Array.isArray(frame.data)) {
           for (const msg of frame.data) {
-            const valid = isValidNewMessagePayload(msg);
-            payloadValidRate.add(valid);
-            const sentAt = pending.get(msg && msg.content);
-            if (sentAt) {
-              deliveryLatency.add(Date.now() - sentAt);
-              deliveryRate.add(valid);
-              msgDelivered.add(1);
-              pending.delete(msg && msg.content);
-            }
+            processReceivedMessage(msg);
           }
         }
       } catch (e) {
-        console.error('Error parsing message', e);
+        console.error('[sender] Error parsing frame:', e);
       }
     });
 
     socket.on('close', () => {
-      pending.forEach(() => deliveryRate.add(false));
+      // Any content still in sentContents was never echo-backed before the
+      // socket closed. Count each as a delivery failure so the metric
+      // accurately reflects messages that did not make the round-trip,
+      // not just messages where the pending map entry was left dangling.
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      for (const _ of sentContents) {
+        deliveryRate.add(false);
+      }
+      sentContents.clear();
+      pending.clear();
     });
 
     socket.setTimeout(() => socket.close(), 120_000);
@@ -265,11 +302,48 @@ function runSender(url, roomId) {
   });
 }
 
+// ── receiver ──────────────────────────────────────────────────────
 function runReceiver(url, roomId) {
   let received = 0;
-  let lastSeq = 0;
   let joinError = null;
+
+  // Per-sender sequence tracking.
+  // The room seq is monotonic across ALL senders, so checking a single
+  // global lastSeq against arrival order produces false positives when
+  // messages from concurrent senders interleave on the wire.
+  // Instead we track the highest seq seen per sender (user_id) and only
+  // flag out-of-order if a message from the SAME sender arrives with a
+  // lower seq than a previous one from that sender.
+  const lastSeqPerSender = new Map();
   const seenSeqs = new Set();
+
+  const processMessage = (msg) => {
+    const valid = isValidMessagePayload(msg);
+    payloadValidRate.add(valid);
+    msgDelivered.add(1);
+    received++;
+
+    if (!valid || !msg) return;
+
+    const seq = msg.seq;
+    const sender = msg.user_id;
+
+    // Duplicate detection: global seq must be unique across the whole room.
+    if (seenSeqs.has(seq)) {
+      seqDuplicateCount.add(1);
+    } else {
+      seenSeqs.add(seq);
+    }
+
+    // Out-of-order detection: per-sender, not global.
+    // A lower seq from a different sender is normal interleaving, not an error.
+    const lastForSender = lastSeqPerSender.get(sender) ?? 0;
+    if (seq <= lastForSender) {
+      seqOutOfOrderCount.add(1);
+    } else {
+      lastSeqPerSender.set(sender, seq);
+    }
+  };
 
   ws.connect(url, {}, (socket) => {
     socket.on('open', () => {
@@ -284,45 +358,29 @@ function runReceiver(url, roomId) {
     socket.on('message', (raw) => {
       try {
         const frame = JSON.parse(raw);
+
         if (frame.event === 'error') {
           joinError = (frame.data && frame.data.message) || 'Unknown error';
           if (received === 0) {
             console.error(
-              `[receiver] join_room failed: ${joinError}. Join the room first: POST /rooms/:roomId/join`,
+              `[receiver] join_room failed: ${joinError}. Join the room first via POST /rooms/:roomId/join`,
             );
           }
           return;
         }
+
         if (frame.event === 'new_message') {
-          const valid = isValidNewMessagePayload(frame.data);
-          payloadValidRate.add(valid);
-          msgDelivered.add(1);
-          received++;
-          if (valid && frame.data) {
-            const seq = frame.data.seq;
-            if (seenSeqs.has(seq)) seqDuplicateCount.add(1);
-            else seenSeqs.add(seq);
-            if (seq <= lastSeq) seqOutOfOrderCount.add(1);
-            else lastSeq = seq;
-          }
+          processMessage(frame.data);
+          return;
         }
+
         if (frame.event === 'new_message_batch' && Array.isArray(frame.data)) {
           for (const msg of frame.data) {
-            const valid = isValidNewMessagePayload(msg);
-            payloadValidRate.add(valid);
-            msgDelivered.add(1);
-            received++;
-            if (valid && msg) {
-              const seq = msg.seq;
-              if (seenSeqs.has(seq)) seqDuplicateCount.add(1);
-              else seenSeqs.add(seq);
-              if (seq <= lastSeq) seqOutOfOrderCount.add(1);
-              else lastSeq = seq;
-            }
+            processMessage(msg);
           }
         }
       } catch (e) {
-        console.error('Error parsing message', e);
+        console.error('[receiver] Error parsing frame:', e);
       }
     });
 
@@ -335,6 +393,7 @@ function runReceiver(url, roomId) {
   });
 }
 
+// ── summary ───────────────────────────────────────────────────────
 export function handleSummary(data) {
   const opts = { indent: ' ', enableColors: false };
   return {
