@@ -44,7 +44,7 @@ export class ChatWsService implements OnModuleDestroy {
 
   private readonly roomMessageBatchBuffers = new Map<string, unknown[]>();
   private roomMessageBatchFlushTimer: NodeJS.Timeout | null = null;
-  private static readonly ROOM_MESSAGE_BATCH_WINDOW_MS = 20;
+  private static readonly ROOM_MESSAGE_BATCH_WINDOW_MS = 30;
 
   /** Registers NOTIFY handlers that broadcast new_message, presence, and typing to room sockets. */
   constructor(
@@ -413,20 +413,16 @@ export class ChatWsService implements OnModuleDestroy {
         socket.bufferedAmount <= WS_BACKPRESSURE_THRESHOLD_BYTES,
     );
 
-    const CHUNK_SIZE = 50;
+    if (!openSockets.length) return;
 
-    const sendChunks = (start = 0) => {
-      const end = Math.min(start + CHUNK_SIZE, openSockets.length);
-      for (let i = start; i < end; i++) {
+    setImmediate(() => {
+      for (const socket of openSockets) {
         try {
-          openSockets[i].send(payload);
+          socket.send(payload);
         } catch {
           // ignore send errors
         }
       }
-      if (end < openSockets.length) setImmediate(() => sendChunks(end));
-    };
-
-    setImmediate(() => sendChunks());
+    });
   }
 }

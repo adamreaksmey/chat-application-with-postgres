@@ -1,0 +1,26 @@
+     ✓ join_room succeeded (user must be room member)
+     ✓ receiver received messages
+     ✓ sender completed
+
+     checks..................: 100.00% ✓ 1440         ✗ 0    
+     data_received...........: 1.8 GB  8.4 MB/s
+     data_sent...............: 2.7 MB  13 kB/s
+   ✓ delivery_latency_ms.....: avg=105.24ms min=1ms      med=46ms    max=2s       p(90)=227ms    p(95)=447ms   
+   ✓ delivery_success_rate...: 99.64%  ✓ 18937        ✗ 68   
+     iteration_duration......: avg=1m35s    min=1m30s    med=1m30s   max=2m0s     p(90)=2m0s     p(95)=2m0s    
+     iterations..............: 720     3.42845/s
+     messages_delivered......: 5334906 25403.413412/s
+     messages_sent...........: 19040   90.663451/s
+   ✓ payload_valid_rate......: 100.00% ✓ 7283140      ✗ 0    
+   ✓ seq_duplicates..........: 0       0/s
+   ✓ seq_out_of_order........: 0       0/s
+     vus.....................: 1       min=1          max=420
+     vus_max.................: 420     min=420        max=420
+   ✓ ws_connecting...........: avg=87.2ms   min=408.37µs med=70.86ms max=302.24ms p(90)=228.04ms p(95)=238.08ms
+   ✓ ws_msgs_received........: 816713  3888.97161/s
+     ws_msgs_sent............: 19880   94.66331/s
+     ws_session_duration.....: avg=1m35s    min=1m30s    med=1m30s   max=2m0s     p(90)=2m0s     p(95)=2m0s    
+     ws_sessions.............: 840     3.999858/s
+running (3m30.0s), 000/420 VUs, 720 complete and 120 interrupted iterations
+senders   ✓ [ 100% ] 001/120 VUs  3m0s
+receivers ✓ [ 100% ] 300 VUs      3m0s

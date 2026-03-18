@@ -1,16 +1,9 @@
 /**
- * Message-delivery–focused load test.
- * Senders send messages and verify echo-back via NOTIFY; receivers stay in the room
- * and count received messages. No churn, typing, or reconnect scenarios.
+ * Load test for message delivery: senders send and verify messages, receivers count them.
+ * No churn, typing, or reconnects. Users must be members of the room.
  *
- * Required: The token's user must be a member of the room. If not, the server sends
- * "Not a member of this room" and no messages are sent. Join first via HTTP:
- *   curl -X POST http://localhost:3000/rooms/:roomId/join -H "Authorization: Bearer $ACCESS_TOKEN"
- *
- * Run: ACCESS_TOKEN=... ROOM_ID=... npm run loadtest:delivery
- * Or:  docker run --rm --network host -v "$(pwd)/loadtest:/scripts" \
- *        -e "WS_URL=ws://localhost/ws" -e ACCESS_TOKEN="$ACCESS_TOKEN" -e ROOM_ID="$ROOM_ID" \
- *        grafana/k6 run /scripts/k6-message-delivery.js
+ * Run with: ACCESS_TOKEN=... ROOM_ID=... npm run loadtest:delivery
+ * Or via Docker using grafana/k6.
  */
 
 import ws from 'k6/ws';

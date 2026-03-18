@@ -22,10 +22,8 @@ High-level features:
 - Room CRUD and membership.
 - Real-time messaging, presence, and typing indicators.
 - Per-room monotonic `seq` for gapless history (clients use `last_seen_seq`).
-- Multiple identical app instances behind Nginx with sticky WebSocket routing.
+- Multiple identical app instances behind Nginx.
 - k6 load testing to push the system under realistic chat workloads.
-
-For the full architecture and rationale, see `plan/BLUEPRINT.md` and `plan/IMPLEMENTATION_PLAN.md`.
 
 ## Local development
 
@@ -52,16 +50,16 @@ You will need a `.env` (or environment variables) that matches `.env.example` (a
 
 ## Docker
 
-Run Postgres + 3 app nodes + Nginx:
+Run Postgres + 5 app nodes + Nginx:
 
 ```bash
 # Build and start
 docker compose up -d --build
 
-# Run DB migrations once (any app container)
+# Run DB migrations once (recommended if you change migrations)
 docker compose run --rm app-1 node scripts/migrate.js
 
-# Traffic: http://localhost (Nginx), WebSocket ws://localhost/ws (sticky via ip_hash)
+# Traffic: http://localhost (Nginx), WebSocket ws://localhost/ws
 # Health: http://localhost/health
 ```
 
@@ -69,7 +67,11 @@ Set `JWT_ACCESS_SECRET` and `JWT_REFRESH_SECRET` in the environment or `.env` fo
 
 ## Load testing with k6
 
-The script `loadtest/k6-chat-ws.js` stresses the WebSocket chat path (senders, receivers, churn, reconnect, typing). A **message-delivery–focused** test is in `loadtest/k6-message-delivery.js`: only senders and receivers, ~1.5 min, tuned for delivery success rate and latency (`npm run loadtest:delivery`). Both run inside Docker and need a running app plus at least one **JWT access token** and one **room id** that the token’s user is a member of.
+The script `loadtest/k6-chat-ws.js` stresses the WebSocket chat path (senders, receivers, churn, reconnect, typing). A **message-delivery–focused** test is in `loadtest/k6-message-delivery.js`: only senders and receivers, tuned for delivery success rate and latency (`npm run loadtest:delivery`). Both run inside Docker and need a running app plus at least one **JWT access token** and one **room id** that the token’s user is a member of.
+
+Notes:
+
+- Server message fanout batches room messages into ~20ms windows and sends `new_message_batch` frames (array of messages) to reduce per-message overhead. Clients/tests should handle both `new_message` and `new_message_batch`.
 
 ### What you need before running
 
